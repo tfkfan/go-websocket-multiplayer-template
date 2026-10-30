@@ -16,59 +16,65 @@ type Config struct {
 	RoomEndpoint      string
 	AssetsDir         string
 	RoomTimeout       time.Duration
-	PlayersBufferSize int
+	RoomCapacity      int
 }
 
 func Read() (*Config, error) {
-	err := godotenv.Load()
-	if err != nil {
+	if err := godotenv.Load(); err != nil {
 		return nil, errors.New("failed to load .env")
 	}
 
 	var config Config
-	port, e := lookupEnv("PORT")
-	if e != nil {
-		return nil, e
+
+	port, err := lookupEnv("PORT")
+	if err != nil {
+		return nil, err
 	}
 	config.Port = port
 
-	webSocketEndpoint, e := lookupEnv("WS_ENDPOINT")
-	if e != nil {
-		return nil, e
+	webSocketEndpoint, err := lookupEnv("WS_ENDPOINT")
+	if err != nil {
+		return nil, err
 	}
 	config.WebSocketEndpoint = webSocketEndpoint
 
-	assetsDir, e := lookupEnv("ASSETS_DIR")
-	if e != nil {
-		return nil, e
+	assetsDir, err := lookupEnv("ASSETS_DIR")
+	if err != nil {
+		return nil, err
 	}
 	config.AssetsDir = assetsDir
 
-	roomEndpoint, e := lookupEnv("ROOM_ENDPOINT")
-	if e != nil {
-		return nil, e
+	roomEndpoint, err := lookupEnv("ROOM_ENDPOINT")
+	if err != nil {
+		return nil, err
 	}
 	config.RoomEndpoint = roomEndpoint
 
-	roomTimeoutRaw, e := lookupEnv("ROOM_TIMEOUT")
-	if e != nil {
-		return nil, e
+	roomTimeoutRaw, err := lookupEnv("ROOM_TIMEOUT")
+	if err != nil {
+		return nil, err
 	}
-	roomTimeout, e := time.ParseDuration(roomTimeoutRaw)
-	if e != nil {
-		return nil, e
+	roomTimeout, err := time.ParseDuration(roomTimeoutRaw)
+	if err != nil {
+		return nil, err
+	}
+	if roomTimeout <= 0 {
+		return nil, errors.New("ROOM_TIMEOUT must be positive")
 	}
 	config.RoomTimeout = roomTimeout
 
-	playersBufferSizeRaf, e := lookupEnv("PLAYERS_BUFFER_SIZE")
-	if e != nil {
-		return nil, e
-	}
-	playersBufferSize, e := strconv.Atoi(playersBufferSizeRaf)
-	if e != nil {
+	roomCapacityRaw, err := lookupEnv("ROOM_CAPACITY")
+	if err != nil {
 		return nil, err
 	}
-	config.PlayersBufferSize = playersBufferSize
+	roomCapacity, err := strconv.Atoi(roomCapacityRaw)
+	if err != nil {
+		return nil, err
+	}
+	if roomCapacity <= 0 {
+		return nil, errors.New("ROOM_CAPACITY must be positive")
+	}
+	config.RoomCapacity = roomCapacity
 
 	return &config, nil
 }

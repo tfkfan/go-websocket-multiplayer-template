@@ -78,38 +78,60 @@ func (srv *GameServer) handleWsConnection(w http.ResponseWriter, r *http.Request
 	if wsErr == nil {
 		wsErr = srv.tryConnect(r, ws)
 	}
+	if wsErr == nil {
+		return
+	}
+
 	if errors.Is(wsErr, context.Canceled) {
+		if ws != nil {
+			network.CloseWebSocket(ws, websocket.StatusGoingAway, "room closed")
+		}
 		return
 	}
-	if websocket.CloseStatus(wsErr) == websocket.StatusNormalClosure ||
-		websocket.CloseStatus(wsErr) == websocket.StatusGoingAway {
+
+	switch websocket.CloseStatus(wsErr) {
+	case websocket.StatusNormalClosure, websocket.StatusGoingAway:
 		return
 	}
-	if wsErr != nil {
-		log.Printf("error on websocket join: %v", wsErr)
-		network.CloseWebSocket(ws, websocket.StatusBadGateway, wsErr.Error())
+
+	if ws == nil {
+		log.Printf("error on websocket accept: %v", wsErr)
 		return
 	}
+	log.Printf("error on websocket join: %v", wsErr)
+	network.CloseWebSocket(ws, websocket.StatusBadGateway, wsErr.Error())
 }
 
 func (srv *GameServer) tryConnect(r *http.Request, ws *websocket.Conn) error {
-	gr, e := room.ExtractGameRoomFromRequest(r, srv.rooms)
-	if e != nil {
-		return e
+	roomID, err := uuid.Parse(r.URL.Query().Get("room"))
+	if err != nil {
+		return err
 	}
-	p, e := player.ExtractPlayerFromRequest(r, ws)
-	if e != nil {
-		return e
+	gr, exists := srv.gameRoom(roomID)
+	if !exists {
+		return errors.New("game room not found")
 	}
 
+	p, err := player.ExtractPlayerFromRequest(r, ws, gr.Context())
+	if err != nil {
+		return err
+	}
+
+	if err := gr.AddPlayer(p); err != nil {
+		p.Stop()
+		return err
+	}
 	defer gr.OnDisconnect(p)
 
-	if gr.AddPlayer(p) {
-		gr.OnJoin(p)
-		return gr.ReadWebSocket(p)
-	}
+	return gr.ReadWebSocket(p)
+}
 
-	return errors.New("game room is full")
+func (srv *GameServer) gameRoom(id uuid.UUID) (*room.GameRoom, bool) {
+	srv.gameServerMu.Lock()
+	defer srv.gameServerMu.Unlock()
+
+	gr, ok := srv.rooms[id]
+	return gr, ok
 }
 
 func (srv *GameServer) handleRoom(w http.ResponseWriter, r *http.Request) {
@@ -123,20 +145,19 @@ func (srv *GameServer) handleRoom(w http.ResponseWriter, r *http.Request) {
 	gr := room.NewGameRoom(gameRoomContext, gameRoomCancel, srv.cfg)
 
 	srv.gameServerMu.Lock()
-	defer srv.gameServerMu.Unlock()
-
 	srv.rooms[gr.Id] = gr
+	srv.gameServerMu.Unlock()
 
 	go gr.Run(srv.serverCtx, func(room *room.GameRoom) {
 		srv.DeleteGameRoom(room.Id)
 	})
 
-	txt, e := gr.Id.MarshalText()
-	if e != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-	}
-	_, err := w.Write(txt)
+	txt, err := gr.Id.MarshalText()
 	if err != nil {
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	}
+	if _, err := w.Write(txt); err != nil {
 		return
 	}
 }

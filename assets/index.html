@@ -1,128 +1,52 @@
-<!doctype html>
-<html lang="en-CA">
+<!DOCTYPE html>
+<html lang="en">
 <head>
-    <meta charset="UTF-8"/>
-    <title>WebSocket Realtime Example</title>
-    <meta name="viewport" content="width=device-width"/>
-
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Circles — Realtime Rooms</title>
+    <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
-<div>
-    <div>
-        <table>
-            <tr>
-                <th>
-                    <button id="new_room_btn">Create new room</button>
-                </th>
-                <th>
-                    <a id="room_id" target="_blank"></a>
-                </th>
-            </tr>
+<main class="layout">
+    <section class="stage">
+        <canvas id="game" width="1200" height="800" aria-label="Shared game field"></canvas>
+    </section>
 
-        </table>
-    </div>
-    <div>
-        <p id="message"></p>
-    </div>
-</div>
-<script>
-    ;(() => {
-        function newRoom() {
-            return new Promise((resolve, reject) => {
-                fetch(`http://${location.host}/room`, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                })
-                    .then(response => {
-                        if (!response.ok) {
-                            throw new Error('Network err ' + response.status);
-                        }
-                        resolve(response.text())
-                    })
-                    .catch(error => {
-                        reject(error)
-                    });
-            })
-        }
+    <aside class="panel">
+        <header>
+            <h1>Circles</h1>
+            <p class="subtitle">Room-based canvas multiplayer</p>
+        </header>
 
-        function dial(roomId) {
-            const conn = new WebSocket(`ws://${location.host}/ws?room=${roomId}`)
+        <div class="room-controls">
+            <button id="createRoomBtn" class="primary" type="button">Create room</button>
+            <div id="roomRow" class="room-row" hidden>
+                <span class="label">Room</span>
+                <a id="roomLink" target="_blank" rel="noreferrer"></a>
+                <button id="copyRoomBtn" class="ghost" type="button" hidden>Copy link</button>
+                <button id="leaveRoomBtn" class="ghost danger" type="button" hidden>Leave</button>
+            </div>
+        </div>
 
-            return new Promise((resolve, reject) => {
-                conn.addEventListener('close', ev => {
-                    console.log(`WebSocket Disconnected code: ${ev.code}, reason: ${ev.reason}`)
-                    reject(ev)
-                })
-                conn.addEventListener('open', ev => {
-                    console.info('websocket connected')
-                    resolve(conn)
-                })
+        <p id="status" class="status">Create a room to start.</p>
 
-                conn.addEventListener('message', ev => {
-                    if (typeof ev.data !== 'string') {
-                        console.error('unexpected message type', typeof ev.data)
-                        return
-                    }
-                    setMessage(ev.data)
-                })
-            })
-        }
+        <section>
+            <h2>State</h2>
+            <pre id="stats">No game state yet.</pre>
+        </section>
 
-        const btn = document.getElementById('new_room_btn')
-        const message = document.getElementById('message')
-        const roomIdAnchor = document.getElementById('room_id')
+        <section class="help">
+            <h2>Controls</h2>
+            <p>
+                Move your circle with <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd>
+                or the arrow keys. Share the room link to let other players join the same
+                rectangular field.
+            </p>
+        </section>
+    </aside>
+</main>
 
-
-        function setMessage(text, error) {
-            message.innerText = text
-            if (error) {
-                message.style.color = 'red'
-                message.style.fontStyle = 'bold'
-            }
-        }
-
-        setMessage('')
-
-        function setRoomId(text, error) {
-            roomIdAnchor.href = `http://${location.host}?room=${text}`
-            roomIdAnchor.innerText = text
-            if (error) {
-                roomIdAnchor.style.color = 'red'
-                roomIdAnchor.style.fontStyle = 'bold'
-            }
-        }
-
-        btn.onclick = () => {
-            newRoom()
-                .then(resp => {
-                    setRoomId(resp)
-                })
-                .catch(e => {
-                    console.log(e)
-                })
-        }
-
-        const url = new URL(location.href);
-        if (url.searchParams.has('room')) {
-            const roomId = url.searchParams.get('room');
-            setRoomId(roomId)
-            dial(roomId)
-                .then((c) => {
-                    var counter = 1
-                    setInterval(() => {
-                        c.send("hello from client " + counter)
-                        counter++
-                    }, 1000)
-                })
-                .catch(e => {
-                    console.log(e)
-                })
-        } else {
-            console.log(`Create new room or rejoin to existing one using link like http://${location.host}/ws?room=ROOMUUID`)
-        }
-    })()
-</script>
+<script src="/websocket.js"></script>
+<script src="/app.js"></script>
 </body>
 </html>

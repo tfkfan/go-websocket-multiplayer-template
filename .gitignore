@@ -17,3 +17,9 @@ main
 
 # Go workspace file
 go.work
+
+# Local Go build/module caches and smoke-test artifacts
+.cache/
+.claude
+.dsh
+.gitkeep
