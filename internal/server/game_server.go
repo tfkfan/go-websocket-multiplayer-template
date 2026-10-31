@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log"
 	"net"
@@ -117,13 +118,48 @@ func (srv *GameServer) tryConnect(r *http.Request, ws *websocket.Conn) error {
 		return err
 	}
 
-	if err := gr.AddPlayer(p); err != nil {
+	if err := gr.SubmitCommand(room.JoinCommand{
+		Player: p,
+	}); err != nil {
 		p.Stop()
 		return err
 	}
-	defer gr.OnDisconnect(p)
+	defer func() {
+		e := gr.SubmitCommand(room.LeaveCommand{Player: p})
+		if e != nil {
+			log.Println(e)
+		}
+	}()
 
-	return gr.ReadWebSocket(p)
+	return srv.ReadWebSocket(p, gr)
+}
+
+func (srv *GameServer) ReadWebSocket(p *player.Player, gr *room.GameRoom) error {
+	for {
+		msg, err := p.Read(gr.Context())
+		if err != nil {
+			return err
+		}
+		srv.handleClientMessage(p, msg)
+	}
+}
+
+func (srv *GameServer) handleClientMessage(p *player.Player, raw []byte) {
+	var event room.ClientEvent
+	if err := json.Unmarshal(raw, &event); err != nil {
+		log.Printf("invalid message from player %s: %v", p.Id, err)
+		return
+	}
+	if event.Type != room.MsgPlayerKeyDown {
+		return
+	}
+
+	var key room.KeyEvent
+	if err := json.Unmarshal(event.Data, &key); err != nil {
+		log.Printf("invalid key event from player %s: %v", p.Id, err)
+		return
+	}
+	p.ApplyKey(key.Key, key.State)
 }
 
 func (srv *GameServer) gameRoom(id uuid.UUID) (*room.GameRoom, bool) {

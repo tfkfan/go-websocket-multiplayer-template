@@ -9,6 +9,7 @@ import (
 	"github.com/coder/websocket"
 	"github.com/google/uuid"
 	"github.com/tfkfan/gogame/internal/network"
+	"github.com/tfkfan/gogame/internal/spatial"
 )
 
 const Speed = 260.0
@@ -68,6 +69,25 @@ func (p *Player) Spawn(pos Vec2, radius float64, color string) {
 	p.color = color
 }
 
+func (p *Player) Key() string {
+	return p.Id.String()
+}
+
+func (p *Player) Shape() spatial.Shape {
+	return spatial.Circle{
+		Center: spatial.Vec2{X: p.position.X, Y: p.position.Y},
+		Radius: p.radius,
+	}
+}
+
+func (p *Player) Solid() bool {
+	return true
+}
+
+func (p *Player) MoveTo(center spatial.Vec2) {
+	p.position = Vec2{X: center.X, Y: center.Y}
+}
+
 func (p *Player) ApplyKey(key string, pressed bool) bool {
 	bit, ok := keyBits[key]
 	if !ok {
@@ -86,7 +106,11 @@ func (p *Player) ApplyKey(key string, pressed bool) bool {
 	}
 }
 
-func (p *Player) Move(dt, width, height float64) {
+func (p *Player) Update(dt, width, height float64) {
+	p.move(dt, width, height)
+}
+
+func (p *Player) move(dt, width, height float64) {
 	mask := p.keys.Load()
 
 	dx, dy := 0.0, 0.0

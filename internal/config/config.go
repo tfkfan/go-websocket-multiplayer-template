@@ -10,6 +10,13 @@ import (
 	"github.com/joho/godotenv"
 )
 
+const (
+	WorldWidth   = 1200.0
+	WorldHeight  = 800.0
+	PlayerRadius = 25.0
+	TickRate     = 30
+)
+
 type Config struct {
 	Port              string
 	WebSocketEndpoint string

@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/tfkfan/gogame/internal/game/player"
+	"github.com/tfkfan/gogame/internal/shared"
 )
 
 func TestSendToOnlyTarget(t *testing.T) {
@@ -17,12 +18,12 @@ func TestSendToOnlyTarget(t *testing.T) {
 	gr := &GameRoom{
 		Id:      uuid.New(),
 		ctx:     ctx,
-		players: newPlayerSet(),
+		players: shared.NewSet[uuid.UUID, *player.Player](),
 	}
 
 	first := player.NewPlayer(ctx, uuid.New(), nil)
 	second := player.NewPlayer(ctx, uuid.New(), nil)
-	if !gr.players.add(first) || !gr.players.add(second) {
+	if !gr.players.Add(first.Id, first) || !gr.players.Add(second.Id, second) {
 		t.Fatal("failed to seed players")
 	}
 
@@ -108,10 +109,10 @@ func TestPublishToConcurrentWithSnapshots(t *testing.T) {
 	gr := &GameRoom{
 		Id:      uuid.New(),
 		ctx:     ctx,
-		players: newPlayerSet(),
+		players: shared.NewSet[uuid.UUID, *player.Player](),
 	}
 	p := player.NewPlayer(ctx, uuid.New(), nil)
-	gr.players.add(p)
+	gr.players.Add(p.Id, p)
 
 	const calls = 200
 	done := make(chan struct{})

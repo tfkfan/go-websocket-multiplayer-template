@@ -2,10 +2,10 @@ package room
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"log"
 	"math"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -15,16 +15,17 @@ import (
 	"github.com/tfkfan/gogame/internal/config"
 	"github.com/tfkfan/gogame/internal/game/player"
 	"github.com/tfkfan/gogame/internal/shared"
+	"github.com/tfkfan/gogame/internal/spatial"
 )
 
 const (
-	WorldWidth   = 1200.0
-	WorldHeight  = 800.0
-	PlayerRadius = 25.0
-	TickRate     = 30
-
 	commandBuffer = 64
 )
+
+var worldRect = spatial.Rect{
+	Min: spatial.Vec2{X: 0, Y: 0},
+	Max: spatial.Vec2{X: config.WorldWidth, Y: config.WorldHeight},
+}
 
 var (
 	ErrRoomClosed     = errors.New("game room is closed")
@@ -39,59 +40,42 @@ var palette = []string{
 }
 
 type GameRoom struct {
+	GameRoomLifecycle
+
 	Id uuid.UUID
 
-	closed atomic.Bool
+	closed    atomic.Bool
+	cfg       *config.Config
+	ctx       context.Context
+	ctxCancel context.CancelFunc
 
-	ctx         context.Context
-	ctxCancel   context.CancelFunc
-	roomTimeout time.Duration
-
-	capacity     int
-	commands     chan roomCommand
-	players      *playerSet
-	scheduler    *shared.Scheduler
-	spawnCounter int
-	tick         uint64
+	commands  chan Command
+	players   *shared.Set[uuid.UUID, *player.Player]
+	spatial   *spatial.Quadtree
+	scheduler *shared.Scheduler
+	spawner   *Spawner
 }
 
 func NewGameRoom(gameRoomContext context.Context, gameRoomCancel context.CancelFunc, srvCfg *config.Config) *GameRoom {
 	r := &GameRoom{
-		Id:           uuid.New(),
-		capacity:     srvCfg.RoomCapacity,
-		commands:     make(chan roomCommand, commandBuffer),
-		players:      newPlayerSet(),
-		ctx:          gameRoomContext,
-		ctxCancel:    gameRoomCancel,
-		roomTimeout:  srvCfg.RoomTimeout,
-		scheduler:    shared.NewScheduler(),
-		spawnCounter: 0,
+		Id:        uuid.New(),
+		cfg:       srvCfg,
+		commands:  make(chan Command, commandBuffer),
+		players:   shared.NewSet[uuid.UUID, *player.Player](),
+		spatial:   spatial.NewQuadtree(worldRect, spatial.Options{}),
+		ctx:       gameRoomContext,
+		ctxCancel: gameRoomCancel,
+		scheduler: shared.NewScheduler(),
 	}
+	r.spawner = NewSpawner(r)
 
-	log.Printf("created game room %s (capacity %d)", r.Id, r.capacity)
+	log.Printf("created game room %s (capacity %d)", r.Id, r.cfg.RoomCapacity)
 
 	return r
 }
 
 func (gr *GameRoom) Context() context.Context {
 	return gr.ctx
-}
-
-func (gr *GameRoom) AddPlayer(p *player.Player) error {
-	reply := make(chan error, 1)
-
-	select {
-	case gr.commands <- joinCommand{player: p, reply: reply}:
-	case <-gr.ctx.Done():
-		return ErrRoomClosed
-	}
-
-	select {
-	case err := <-reply:
-		return err
-	case <-gr.ctx.Done():
-		return ErrRoomClosed
-	}
 }
 
 func (gr *GameRoom) SendTo(playerID uuid.UUID, messageType MessageType, data any) error {
@@ -103,7 +87,7 @@ func (gr *GameRoom) PublishTo(playerID uuid.UUID, kind player.SnapshotType, mess
 		return ErrRoomClosed
 	}
 
-	p, ok := gr.players.get(playerID)
+	p, ok := gr.players.Get(playerID)
 	if !ok {
 		if gr.closed.Load() {
 			return ErrRoomClosed
@@ -129,33 +113,30 @@ func (gr *GameRoom) PublishTo(playerID uuid.UUID, kind player.SnapshotType, mess
 	return nil
 }
 
-func (gr *GameRoom) OnDisconnect(p *player.Player) {
-	log.Printf("player %s disconnected from room %s", p.Id, gr.Id)
-	p.Stop()
-
+func (gr *GameRoom) SubmitCommand(command Command) error {
 	select {
-	case gr.commands <- leaveCommand{player: p}:
+	case gr.commands <- command:
+		return nil
 	case <-gr.ctx.Done():
+		return ErrRoomClosed
 	}
 }
 
-func (gr *GameRoom) join(p *player.Player) error {
+func (gr *GameRoom) OnJoin(p *player.Player) error {
 	if gr.closed.Load() || gr.ctx.Err() != nil {
 		return ErrRoomClosed
 	}
 
-	gr.reapStopped()
-
-	if _, exists := gr.players.get(p.Id); exists {
+	if _, exists := gr.players.Get(p.Id); exists {
 		return ErrPlayerExists
 	}
-	if gr.players.len() >= gr.capacity {
+	if gr.players.Len() >= gr.cfg.RoomCapacity {
 		return ErrRoomFull
 	}
 
-	slot := gr.nextSlot()
-	p.Spawn(gr.slotPosition(slot), PlayerRadius, palette[slot%len(palette)])
-	if !gr.players.add(p) {
+	slot := gr.spawner.nextSlot()
+	p.Spawn(gr.spawner.slotPosition(slot), config.PlayerRadius, palette[slot%len(palette)])
+	if !gr.players.Add(p.Id, p) {
 		return ErrPlayerExists
 	}
 
@@ -163,120 +144,109 @@ func (gr *GameRoom) join(p *player.Player) error {
 	msg, err := marshalEvent(MsgJoinSuccess, JoinSuccessData{
 		PlayerID: p.Id,
 		RoomID:   gr.Id,
-		Width:    WorldWidth,
-		Height:   WorldHeight,
+		Width:    config.WorldWidth,
+		Height:   config.WorldHeight,
 		Radius:   state.Radius,
 		Color:    state.Color,
-		TickRate: TickRate,
+		TickRate: config.TickRate,
 	})
 	if err != nil {
-		gr.players.remove(p)
+		gr.players.Remove(p.Id)
 		return err
 	}
 
 	p.Publish(player.SystemType, msg)
 	go gr.writeLoop(p)
-	gr.publishSnapshot()
 
 	return nil
 }
 
-func (gr *GameRoom) leave(p *player.Player) {
-	gr.players.remove(p)
+func (gr *GameRoom) OnDisconnect(p *player.Player) error {
+	gr.players.Remove(p.Id)
 	p.Stop()
+	return nil
 }
 
 func (gr *GameRoom) reapStopped() {
-	for _, p := range gr.players.list() {
+	for _, p := range gr.players.List() {
 		select {
 		case <-p.Done():
-			gr.players.remove(p)
+			gr.players.Remove(p.Id)
 		default:
 		}
 	}
 }
 
-func (gr *GameRoom) nextSlot() int {
-	slots := gr.capacity
-	if slots < 1 {
-		return 0
-	}
+func (gr *GameRoom) movePlayers(dt float64) map[string]int {
+	players := gr.players.List()
+	sort.Slice(players, func(i, j int) bool {
+		return players[i].Key() < players[j].Key()
+	})
 
-	minDist := PlayerRadius * 2.5
-	players := gr.players.list()
-	for i := range slots {
-		slot := (gr.spawnCounter + i) % slots
-		pos := gr.slotPosition(slot)
-		occupied := false
-		for _, other := range players {
-			state := other.Snapshot()
-			dx := state.Position.X - pos.X
-			dy := state.Position.Y - pos.Y
-			if dx*dx+dy*dy < minDist*minDist {
-				occupied = true
-				break
-			}
-		}
-		if !occupied {
-			gr.spawnCounter = slot + 1
-			return slot
+	moved := make(map[string]int, len(players))
+	for order, p := range players {
+		before := p.Snapshot()
+		p.Update(dt, config.WorldWidth, config.WorldHeight)
+		current := p.Snapshot()
+		if current.Position != before.Position {
+			moved[p.Key()] = order
 		}
 	}
-
-	slot := gr.spawnCounter % slots
-	gr.spawnCounter++
-	return slot
+	return moved
 }
 
-func (gr *GameRoom) slotPosition(slot int) player.Vec2 {
-	slots := gr.capacity
-	if slots < 1 {
-		slots = 1
-	}
-	angle := 2*math.Pi*float64(slot)/float64(slots) - math.Pi/2
-	ring := math.Min(WorldWidth, WorldHeight) * 0.32
-	return player.Vec2{
-		X: WorldWidth/2 + ring*math.Cos(angle),
-		Y: WorldHeight/2 + ring*math.Sin(angle),
-	}
-}
+func (gr *GameRoom) handleCollisions(moved map[string]int) {
+	spatial.DetectCollisions(gr.spatial, func(contact spatial.Contact) {
+		aOrder, aMoved := moved[contact.A.Key()]
+		bOrder, bMoved := moved[contact.B.Key()]
 
-func (gr *GameRoom) ReadWebSocket(p *player.Player) error {
-	for {
-		msg, err := p.Read(gr.ctx)
-		if err != nil {
-			return err
+		switch {
+		case !aMoved && !bMoved:
+			return
+		case aMoved && bMoved && aOrder > bOrder:
+			handleCollision(contact.A, contact.Normal, contact.Depth)
+		case aMoved && bMoved:
+			handleCollision(contact.B, contact.Normal.Scale(-1), contact.Depth)
+		case aMoved:
+			handleCollision(contact.A, contact.Normal, contact.Depth)
+		default:
+			handleCollision(contact.B, contact.Normal.Scale(-1), contact.Depth)
 		}
-		gr.handleClientMessage(p, msg)
-	}
+	})
 }
 
-func (gr *GameRoom) handleClientMessage(p *player.Player, raw []byte) {
-	var event clientEvent
-	if err := json.Unmarshal(raw, &event); err != nil {
-		log.Printf("invalid message from player %s: %v", p.Id, err)
-		return
-	}
-	if event.Type != MsgPlayerKeyDown {
+func handleCollision(body spatial.Body, normal spatial.Vec2, depth float64) {
+	p, ok := body.(*player.Player)
+	if !ok {
 		return
 	}
 
-	var key keyEvent
-	if err := json.Unmarshal(event.Data, &key); err != nil {
-		log.Printf("invalid key event from player %s: %v", p.Id, err)
-		return
-	}
-	p.ApplyKey(key.Key, key.State)
+	center := p.Shape().CenterPoint()
+	target := center.Add(normal.Scale(depth))
+	radius := p.Snapshot().Radius
+	target.X = math.Min(math.Max(target.X, radius), config.WorldWidth-radius)
+	target.Y = math.Min(math.Max(target.Y, radius), config.WorldHeight-radius)
+	p.MoveTo(spatial.Vec2{X: target.X, Y: target.Y})
 }
 
-func (gr *GameRoom) update(dt float64) {
-	for _, p := range gr.players.list() {
-		p.Move(dt, WorldWidth, WorldHeight)
+func (gr *GameRoom) refreshSpatial() {
+	players := gr.players.List()
+	bodies := make([]spatial.Body, len(players))
+	for i, p := range players {
+		bodies[i] = p
 	}
+	gr.spatial.Rebuild(bodies)
+}
+
+func (gr *GameRoom) OnUpdate(dt float64) {
+	gr.reapStopped()
+	gr.handleCollisions(gr.movePlayers(dt))
+	gr.refreshSpatial()
+	gr.publishSnapshot()
 }
 
 func (gr *GameRoom) publishSnapshot() {
-	players := gr.players.list()
+	players := gr.players.List()
 	if len(players) == 0 {
 		return
 	}
@@ -286,12 +256,10 @@ func (gr *GameRoom) publishSnapshot() {
 		states = append(states, p.Snapshot())
 	}
 
-	gr.tick++
 	base := UpdateData{
 		Players: states,
-		Width:   WorldWidth,
-		Height:  WorldHeight,
-		Tick:    gr.tick,
+		Width:   config.WorldWidth,
+		Height:  config.WorldHeight,
 	}
 
 	snapshot, err := marshalEvent(MsgUpdate, base)
@@ -342,11 +310,11 @@ func (gr *GameRoom) writeLoop(p *player.Player) {
 
 func (gr *GameRoom) Run(ctx context.Context, closeCallback func(gr *GameRoom)) {
 	timeout := make(chan struct{}, 1)
-	gr.scheduler.Schedule(gr.roomTimeout, func() {
+	gr.scheduler.Schedule(gr.cfg.RoomTimeout, func() {
 		timeout <- struct{}{}
 	})
 
-	ticker := time.NewTicker(time.Second / time.Duration(TickRate))
+	ticker := time.NewTicker(time.Second / time.Duration(config.TickRate))
 	defer ticker.Stop()
 
 	last := time.Now()
@@ -361,16 +329,18 @@ func (gr *GameRoom) Run(ctx context.Context, closeCallback func(gr *GameRoom)) {
 			log.Printf("Game room %s closed because context cancel", gr.Id)
 			return
 		case cmd := <-gr.commands:
-			cmd.apply(gr)
+			err := cmd.apply(gr)
+			if err != nil {
+				log.Println(err)
+				return
+			}
 		case now := <-ticker.C:
 			dt := now.Sub(last).Seconds()
 			last = now
 			if dt > 0.25 {
 				dt = 0.25
 			}
-			gr.reapStopped()
-			gr.update(dt)
-			gr.publishSnapshot()
+			gr.OnUpdate(dt)
 		}
 	}
 }
@@ -384,7 +354,7 @@ func (gr *GameRoom) close(closeCallback func(gr *GameRoom)) {
 		_ = gr.scheduler.Shutdown(context.Background())
 	}
 
-	players := gr.players.clear()
+	players := gr.players.Clear()
 	for _, p := range players {
 		p.Stop()
 	}

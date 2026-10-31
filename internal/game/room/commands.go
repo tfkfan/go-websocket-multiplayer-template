@@ -2,23 +2,22 @@ package room
 
 import "github.com/tfkfan/gogame/internal/game/player"
 
-type roomCommand interface {
-	apply(*GameRoom)
+type Command interface {
+	apply(*GameRoom) error
 }
 
-type joinCommand struct {
-	player *player.Player
-	reply  chan error
+type JoinCommand struct {
+	Player *player.Player
 }
 
-type leaveCommand struct {
-	player *player.Player
+type LeaveCommand struct {
+	Player *player.Player
 }
 
-func (c joinCommand) apply(gr *GameRoom) {
-	c.reply <- gr.join(c.player)
+func (c JoinCommand) apply(gr *GameRoom) error {
+	return gr.OnJoin(c.Player)
 }
 
-func (c leaveCommand) apply(gr *GameRoom) {
-	gr.leave(c.player)
+func (c LeaveCommand) apply(gr *GameRoom) error {
+	return gr.OnDisconnect(c.Player)
 }

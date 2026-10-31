@@ -19,12 +19,12 @@ const (
 	MsgPlayerKeyDown MessageType = 200
 )
 
-type clientEvent struct {
+type ClientEvent struct {
 	Type MessageType     `json:"type"`
 	Data json.RawMessage `json:"data"`
 }
 
-type keyEvent struct {
+type KeyEvent struct {
 	Key   string `json:"key"`
 	State bool   `json:"state"`
 }
@@ -43,7 +43,6 @@ type UpdateData struct {
 	Players []player.State `json:"players"`
 	Width   float64        `json:"width"`
 	Height  float64        `json:"height"`
-	Tick    uint64         `json:"tick"`
 }
 
 type FailureData struct {

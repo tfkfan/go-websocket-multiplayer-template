@@ -10,7 +10,8 @@ render as colored circles. The server is authoritative and broadcasts full state
 - `POST /room` creates a room and returns its UUID; the browser client auto-joins.
 - A room link (`/?room=<uuid>`) admits up to `ROOM_CAPACITY` players.
 - Movement is server-side: 260 world units/s, normalized diagonals, circles
-  clamped inside the rectangle. Collisions are not simulated.
+  clamped inside the rectangle. Solid players keep moving: a player that contacts
+  another slides out of overlap, and the other player is never moved.
 - Every player gets a spawn slot around the field center and a palette color.
 - Every 1/30 s the room actor serializes one full `UPDATE` snapshot and publishes
   it to every player; clients redraw from it rather than predicting state.
@@ -18,7 +19,7 @@ render as colored circles. The server is authoritative and broadcasts full state
   Invalid, full, or closed rooms close with `1014`.
 
 The game is intentionally a demo/template: there is no authentication,
-persistence, reconnect, scoring, collision, TLS, or multi-process state. The
+persistence, reconnect, scoring, TLS, or multi-process state. The
 behavioral contract is maintained as OpenSpec capability specs in
 [`openspec/specs/`](openspec/specs/) — see
 [AI-assisted development](#ai-assisted-development-with-openspec).
@@ -31,6 +32,13 @@ behavioral contract is maintained as OpenSpec capability specs in
   writer** goroutine. There is no per-player inbound consumer.
 - Movement keys are an atomic bitmask updated by the reader; the room tick reads
   the latest state. No key-event queue.
+- Each tick moves every player in stable key order, refreshes the room quadtree
+  once, and lets a room callback relocate exactly one body per contact (the only
+  mover, or the later mover when both moved). The corrected positions are
+  published immediately; the index catches up on the next tick's refresh. The
+  spatial package never moves a body, and another player is never repositioned by
+  a collision. The index also answers shape, radius, and nearest-point queries for
+  actor-side gameplay; it is owned by the room actor, not shared across goroutines.
 - The outbound mailbox is a map from `SnapshotType` (`SystemType`,
   `PrivateType`, `BroadcastType`, `CustomType`) to the latest payload of that
   type. The writer sends one payload per type in numeric order.
@@ -188,7 +196,8 @@ internal/config/config.go       .env loading and validation
 internal/server/game_server.go  routes, room registry, admission
 internal/game/room/             room actor, membership, spawns, snapshots, writer, commands
 internal/game/player/           player state, snapshot types, latest-per-type outbox
-internal/shared/                generic heap + reusable-timer scheduler
+internal/spatial/               world-bounded quadtree + circle/AABB collision detection
+internal/shared/                generic heap, concurrent set + reusable-timer scheduler
 assets/index.html               canvas UI
 assets/app.js                   room flow, rendering, input
 assets/websocket.js             JSON envelope client
@@ -211,7 +220,7 @@ The baseline change ([`2026-10-31-baseline-specs`](openspec/changes/archive/2026
 | Capability | Covers |
 | --- | --- |
 | [`room-lifecycle`](openspec/specs/room-lifecycle/spec.md) | creation, admission, spawn slots, join, disconnect, timeout, close, shutdown |
-| [`room-gameplay`](openspec/specs/room-gameplay/spec.md) | world bounds, input state, movement, tick cadence, no collision |
+| [`room-gameplay`](openspec/specs/room-gameplay/spec.md) | world bounds, input state, movement, tick cadence, one-sided collision correction |
 | [`room-messaging`](openspec/specs/room-messaging/spec.md) | outbox channels, coalescing, broadcast UPDATE, private messages, extension |
 | [`wire-protocol`](openspec/specs/wire-protocol/spec.md) | HTTP/WS endpoints, envelope, message numbers, handshake limits, close codes |
 | [`server-configuration`](openspec/specs/server-configuration/spec.md) | `.env`, validation, endpoint wiring, compiled constants |
@@ -275,8 +284,17 @@ with `openspec validate --specs --strict`.
   plus 5 s for the peer to answer, so up to ~10 s), and the room stays in the
   registry until that finishes; reconnects during that window are rejected as
   closed.
-- No collision detection, rounds, scoring, win conditions, spectators, or
-  reconnect/session resumption.
+- Collisions are discrete tick detection, not continuous collision detection:
+  fast objects can tunnel. Correction is one-sided and processed in stable player
+  order, so a head-on pair is resolved in favor of the earlier mover, and dense
+  clusters or wall corners may retain a small residual overlap in a single pass.
+  Collision corrections are published immediately but reach the spatial index on
+  the next tick's refresh. There is no two-sided push. There is no rounds, scoring,
+  win conditions,
+  spectators, or reconnect/session resumption.
+- No obstacles, collectable items, shots, or area skills are spawned yet. The
+  spatial engine supports them, but there is no wire format or rendering, and
+  spatial queries must run on the room actor goroutine.
 - Room UUID is the only access capability; there is no auth, rate limiting, TLS,
   health endpoint, metrics, or multi-instance support.
 - Slow clients skip intermediate snapshots; each outbox keeps only the latest

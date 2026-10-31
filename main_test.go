@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"math"
 	"net/http"
 	"testing"
 	"time"
@@ -187,6 +188,164 @@ func TestRoomGameState(t *testing.T) {
 
 	_ = conn.Close(websocket.StatusNormalClosure, "test complete")
 	stopServer(t, cancel, errc)
+}
+
+func TestRoomGameStateCollision(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	errc := startServer(t, ctx)
+
+	client := newTestClient(2 * time.Second)
+	roomID, err := createGameRoom(client)
+	if err != nil {
+		cancel()
+		t.Fatalf("failed to create game room: %v", err)
+	}
+
+	dialCtx, dialCancel := context.WithTimeout(ctx, 3*time.Second)
+	firstConn, _, err := websocket.Dial(dialCtx, "ws://localhost:8080/ws?room="+roomID.String(), nil)
+	dialCancel()
+	if err != nil {
+		cancel()
+		t.Fatalf("first dial failed: %v", err)
+	}
+	defer func() {
+		_ = firstConn.Close(websocket.StatusNormalClosure, "test complete")
+	}()
+
+	firstJoin := readJoin(t, ctx, firstConn)
+	if _, ok := findPlayer(readUpdate(t, ctx, firstConn), firstJoin.PlayerID); !ok {
+		t.Fatal("first player missing from its first update")
+	}
+
+	dialCtx, dialCancel = context.WithTimeout(ctx, 3*time.Second)
+	secondConn, _, err := websocket.Dial(dialCtx, "ws://localhost:8080/ws?room="+roomID.String(), nil)
+	dialCancel()
+	if err != nil {
+		cancel()
+		t.Fatalf("second dial failed: %v", err)
+	}
+	defer func() {
+		_ = secondConn.Close(websocket.StatusNormalClosure, "test complete")
+	}()
+
+	secondJoin := readJoin(t, ctx, secondConn)
+	readUpdate(t, ctx, secondConn)
+
+	update := readUpdateWithPlayers(t, ctx, firstConn, firstJoin.PlayerID, secondJoin.PlayerID)
+	first, _ := findPlayer(update, firstJoin.PlayerID)
+	second, _ := findPlayer(update, secondJoin.PlayerID)
+
+	dx := second.Position.X - first.Position.X
+	dy := second.Position.Y - first.Position.Y
+	firstKeys := keyList(dx, "RIGHT", "LEFT")
+	secondKeys := keyList(-dx, "RIGHT", "LEFT")
+	firstKeys = append(firstKeys, keyList(dy, "DOWN", "UP")...)
+	secondKeys = append(secondKeys, keyList(-dy, "DOWN", "UP")...)
+
+	for _, key := range firstKeys {
+		writeKeyEvent(t, ctx, firstConn, key, true)
+	}
+	for _, key := range secondKeys {
+		writeKeyEvent(t, ctx, secondConn, key, true)
+	}
+
+	radius := firstJoin.Radius
+	minDistance := math.Inf(1)
+	deadline := time.Now().Add(4 * time.Second)
+	for time.Now().Before(deadline) {
+		next := readUpdate(t, ctx, firstConn)
+		firstPlayer, firstOK := findPlayer(next, firstJoin.PlayerID)
+		secondPlayer, secondOK := findPlayer(next, secondJoin.PlayerID)
+		if !firstOK || !secondOK {
+			continue
+		}
+
+		distance := math.Hypot(
+			secondPlayer.Position.X-firstPlayer.Position.X,
+			secondPlayer.Position.Y-firstPlayer.Position.Y,
+		)
+		if distance < minDistance {
+			minDistance = distance
+		}
+		if distance < 2*radius-1 {
+			t.Fatalf("players overlap in UPDATE: distance %.3f, radius %.1f", distance, radius)
+		}
+		assertPlayerInWorld(t, firstPlayer, next)
+		assertPlayerInWorld(t, secondPlayer, next)
+
+		if minDistance <= 2*radius+35 {
+			break
+		}
+	}
+
+	for _, key := range firstKeys {
+		writeKeyEvent(t, ctx, firstConn, key, false)
+	}
+	for _, key := range secondKeys {
+		writeKeyEvent(t, ctx, secondConn, key, false)
+	}
+
+	if minDistance > 2*radius+35 {
+		t.Fatalf("players never approached: minimum distance %.3f", minDistance)
+	}
+
+	_ = firstConn.Close(websocket.StatusNormalClosure, "test complete")
+	_ = secondConn.Close(websocket.StatusNormalClosure, "test complete")
+	stopServer(t, cancel, errc)
+}
+
+func keyList(delta float64, positive, negative string) []string {
+	switch {
+	case delta > 10:
+		return []string{positive}
+	case delta < -10:
+		return []string{negative}
+	default:
+		return nil
+	}
+}
+
+func writeKeyEvent(t *testing.T, ctx context.Context, conn *websocket.Conn, key string, state bool) {
+	t.Helper()
+
+	writeCtx, writeCancel := context.WithTimeout(ctx, time.Second)
+	defer writeCancel()
+	if err := wsjson.Write(writeCtx, conn, writeEvent{
+		Type: 200,
+		Data: keyPayload{Key: key, State: state},
+	}); err != nil {
+		t.Fatalf("failed to write key event %s: %v", key, err)
+	}
+}
+
+func readUpdateWithPlayers(t *testing.T, ctx context.Context, conn *websocket.Conn, firstID, secondID string) updateView {
+	t.Helper()
+
+	for i := 0; i < 30; i++ {
+		update := readUpdate(t, ctx, conn)
+		if _, firstOK := findPlayer(update, firstID); !firstOK {
+			continue
+		}
+		if _, secondOK := findPlayer(update, secondID); !secondOK {
+			continue
+		}
+		return update
+	}
+	t.Fatal("update with both players did not arrive")
+	return updateView{}
+}
+
+func assertPlayerInWorld(t *testing.T, p playerView, update updateView) {
+	t.Helper()
+
+	if p.Position.X < p.Radius || p.Position.X > update.Width-p.Radius ||
+		p.Position.Y < p.Radius || p.Position.Y > update.Height-p.Radius {
+		t.Fatalf("player %s at %+v is outside the %gx%g world", p.ID, p.Position, update.Width, update.Height)
+	}
 }
 
 func startServer(t *testing.T, ctx context.Context) chan error {
