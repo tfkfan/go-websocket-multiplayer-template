@@ -1,0 +1,140 @@
+[gd_scene format=3 uid="uid://cwprot26gbn65"]
+
+[ext_resource type="Script" uid="uid://b7a7ha34muto1" path="res://scripts/main.gd" id="1_main"]
+[ext_resource type="PackedScene" uid="uid://cpmkqp0mpmmwa" path="res://scenes/game_field.tscn" id="2_game_field"]
+
+[node name="Main" type="Control" unique_id=1584566594]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("1_main")
+
+[node name="Background" type="ColorRect" parent="." unique_id=1909449569]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+color = Color(0.027451, 0.0470588, 0.0784314, 1)
+
+[node name="Layout" type="Control" parent="." unique_id=1209946234]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+
+[node name="Stage" type="Control" parent="Layout" unique_id=61140990]
+unique_name_in_owner = true
+anchors_preset = 0
+mouse_filter = 2
+
+[node name="GameField" parent="Layout/Stage" unique_id=1065355749 instance=ExtResource("2_game_field")]
+unique_name_in_owner = true
+layout_mode = 1
+
+[node name="Panel" type="PanelContainer" parent="Layout" unique_id=1224992565]
+unique_name_in_owner = true
+visible = false
+custom_minimum_size = Vector2(320, 0)
+layout_mode = 0
+
+[node name="PanelMargin" type="MarginContainer" parent="Layout/Panel" unique_id=832726298]
+layout_mode = 2
+theme_override_constants/margin_left = 20
+theme_override_constants/margin_top = 20
+theme_override_constants/margin_right = 20
+theme_override_constants/margin_bottom = 20
+
+[node name="PanelScroll" type="ScrollContainer" parent="Layout/Panel/PanelMargin" unique_id=1526080126]
+layout_mode = 2
+horizontal_scroll_mode = 0
+
+[node name="Body" type="VBoxContainer" parent="Layout/Panel/PanelMargin/PanelScroll" unique_id=912023903]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_constants/separation = 12
+
+[node name="Title" type="Label" parent="Layout/Panel/PanelMargin/PanelScroll/Body" unique_id=1967341099]
+unique_name_in_owner = true
+layout_mode = 2
+text = "Circles"
+
+[node name="Subtitle" type="Label" parent="Layout/Panel/PanelMargin/PanelScroll/Body" unique_id=941093048]
+unique_name_in_owner = true
+layout_mode = 2
+text = "Room-based canvas multiplayer"
+autowrap_mode = 3
+
+[node name="CreateButton" type="Button" parent="Layout/Panel/PanelMargin/PanelScroll/Body" unique_id=1475212022]
+unique_name_in_owner = true
+layout_mode = 2
+text = "Create room"
+
+[node name="RoomRow" type="HBoxContainer" parent="Layout/Panel/PanelMargin/PanelScroll/Body" unique_id=764184420]
+unique_name_in_owner = true
+visible = false
+layout_mode = 2
+theme_override_constants/separation = 7
+
+[node name="RoomLabel" type="Label" parent="Layout/Panel/PanelMargin/PanelScroll/Body/RoomRow" unique_id=144218167]
+unique_name_in_owner = true
+layout_mode = 2
+text = "ROOM"
+
+[node name="RoomLink" type="LinkButton" parent="Layout/Panel/PanelMargin/PanelScroll/Body/RoomRow" unique_id=871038520]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(80, 0)
+layout_mode = 2
+size_flags_horizontal = 3
+text = "—"
+underline = 1
+text_overrun_behavior = 3
+
+[node name="CopyButton" type="Button" parent="Layout/Panel/PanelMargin/PanelScroll/Body/RoomRow" unique_id=1778813937]
+unique_name_in_owner = true
+visible = false
+layout_mode = 2
+text = "Copy link"
+
+[node name="LeaveButton" type="Button" parent="Layout/Panel/PanelMargin/PanelScroll/Body/RoomRow" unique_id=614576011]
+unique_name_in_owner = true
+visible = false
+layout_mode = 2
+text = "Leave"
+
+[node name="Status" type="Label" parent="Layout/Panel/PanelMargin/PanelScroll/Body" unique_id=653260772]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(0, 42)
+layout_mode = 2
+text = "Create a room to start."
+autowrap_mode = 3
+
+[node name="StateHeader" type="Label" parent="Layout/Panel/PanelMargin/PanelScroll/Body" unique_id=723503384]
+unique_name_in_owner = true
+layout_mode = 2
+text = "STATE"
+
+[node name="Stats" type="Label" parent="Layout/Panel/PanelMargin/PanelScroll/Body" unique_id=330061055]
+unique_name_in_owner = true
+layout_mode = 2
+text = "No game state yet."
+autowrap_mode = 3
+
+[node name="ControlsHeader" type="Label" parent="Layout/Panel/PanelMargin/PanelScroll/Body" unique_id=268831889]
+unique_name_in_owner = true
+layout_mode = 2
+text = "CONTROLS"
+
+[node name="ControlsHelp" type="Label" parent="Layout/Panel/PanelMargin/PanelScroll/Body" unique_id=1790494948]
+unique_name_in_owner = true
+layout_mode = 2
+text = "Move your circle with W A S D or the arrow keys. Share the room link so other players join the same field."
+autowrap_mode = 3

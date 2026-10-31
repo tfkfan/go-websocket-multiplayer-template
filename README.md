@@ -1,13 +1,13 @@
 # Circles — realtime room game
 
-A room-based multiplayer canvas game in Go. Each room owns a shared
-**1200 × 800** field. Players join by UUID, move with WASD or the arrow keys, and
-render as colored circles. The server is authoritative and broadcasts full state
-30 times per second.
+A room-based multiplayer game in Go with a Godot 4.7 web client. Each room owns a
+shared **1200 × 800** field. Players join by UUID, move with WASD or the arrow
+keys, and render as colored circles. The server is authoritative and broadcasts
+full state 30 times per second.
 
 ## What it does
 
-- `POST /room` creates a room and returns its UUID; the browser client auto-joins.
+- `POST /room` creates a room and returns its UUID; the Godot client auto-joins.
 - A room link (`/?room=<uuid>`) admits up to `ROOM_CAPACITY` players.
 - Movement is server-side: 260 world units/s, normalized diagonals, circles
   clamped inside the rectangle. Solid players keep moving: a player that contacts
@@ -49,6 +49,10 @@ behavioral contract is maintained as OpenSpec capability specs in
 
 ## Screenshots
 
+These images show the earlier Canvas client. The Godot client preserves the same
+field, palette, panel, and responsive layout; re-capture them from a Godot build
+when convenient.
+
 **Lobby** — create a room, or open a shared `?room=` link:
 
 ![Lobby](docs/lobby.png)
@@ -63,15 +67,28 @@ behavioral contract is maintained as OpenSpec capability specs in
 - Go 1.27 or newer
 - A `.env` file in the working directory (checked in; all six values are required)
 - The configured port free (sample: `8080`)
-- A browser with Canvas and WebSocket support
+- A WebGL 2 browser with WebSocket support
+- Godot 4.7 with the Web export templates installed (only needed to rebuild the
+  client)
 - OpenSpec CLI and an agent with the `/opsx:*` commands are optional and only
   needed for the spec-driven development workflow
 
 ## Run
 
+Build the Godot client first (once, and after any client change), then start the
+server. The exported files land in the ignored `client/build/web` directory, which
+`ASSETS_DIR` points at. Godot's CLI does not create the output folder, so create it
+before the first export.
+
 ```bash
+mkdir -p client/build/web
+godot --headless --path client --import
+godot --headless --path client --export-release "Web"
 go run .
 ```
+
+Without an export, the room and WebSocket endpoints still work, but `/` returns
+404 because there is no `index.html` to serve.
 
 Expected startup output:
 
@@ -105,12 +122,12 @@ variables take precedence over file values.
 | `PORT` | `:8080` | `net.Listen` address |
 | `WS_ENDPOINT` | `/ws` | WebSocket upgrade path |
 | `ROOM_ENDPOINT` | `/room` | Room-creation path |
-| `ASSETS_DIR` | `./assets` | Static/client root |
+| `ASSETS_DIR` | `./client/build/web` | Godot Web export root |
 | `ROOM_TIMEOUT` | `30m` | Fixed room lifetime; positive duration |
 | `ROOM_CAPACITY` | `8` | Maximum players/spawn slots; positive integer |
 
 The client hard-codes `/room` and `/ws`, so changing the endpoint variables also
-requires editing `assets/app.js`.
+requires editing `client/scripts/protocol.gd`.
 
 World and gameplay constants are compiled in:
 
@@ -126,8 +143,8 @@ World and gameplay constants are compiled in:
 
 Messages are JSON text frames with a numeric type and payload:
 `{"type": <number>, "data": ...}`. On the server these numbers form the
-`room.MessageType` enum (`internal/game/room/protocol.go`); the browser client
-mirrors them in `assets/websocket.js`.
+`room.MessageType` enum (`internal/game/room/protocol.go`); the Godot client
+mirrors them in `client/scripts/protocol.gd`.
 
 | Direction | Type | Payload |
 | --- | --- | --- |
@@ -179,9 +196,9 @@ the outbox and writer pick it up in numeric order.
 not delivered; a stop racing with `SendTo` drops the frame. It does not need to
 run on the actor goroutine — actor code can call `player.Publish` directly.
 
-Private frames use type `110` and are normal top-level events. The reference
-client does not register a `PRIVATE` handler yet; `ws.on(ws.PRIVATE, handler)`
-in `assets/app.js` is the extension point.
+Private frames use type `110` and are normal top-level events. The Godot client
+does not handle `PRIVATE` yet; the message dispatch in
+`client/scripts/network.gd` is the extension point.
 
 Close codes: `1014` for an invalid room ID, unknown/full/closed room, or duplicate
 player; `1001` for room expiry; `1009` for messages over 32 KiB. Server shutdown
@@ -198,10 +215,17 @@ internal/game/room/             room actor, membership, spawns, snapshots, write
 internal/game/player/           player state, snapshot types, latest-per-type outbox
 internal/spatial/               world-bounded quadtree + circle/AABB collision detection
 internal/shared/                generic heap, concurrent set + reusable-timer scheduler
-assets/index.html               canvas UI
-assets/app.js                   room flow, rendering, input
-assets/websocket.js             JSON envelope client
-assets/styles.css               responsive layout
+client/project.godot            Godot 4.7 project settings and Network autoload
+client/export_presets.cfg       single-threaded Web export preset
+client/scenes/main.tscn         lobby and side-panel scene
+client/scenes/game_field.tscn   field rendering scene
+client/scripts/main.gd          room flow, layout, input, status
+client/scripts/network.gd       HTTP room creation and WebSocket transport
+client/scripts/platform.gd      browser bridge and desktop fallback
+client/scripts/game_field.gd    field and player drawing
+client/scripts/protocol.gd      message numbers and endpoint paths
+client/scripts/ui_theme.gd      palette and control styles
+client/build/web/               generated Web export (ignored)
 docs/                           README screenshots
 openspec/config.yaml            OpenSpec workflow schema (spec-driven)
 openspec/specs/                 capability specs (behavioral contract)
@@ -274,8 +298,9 @@ connects two players, validates JOIN_SUCCESS and the UPDATE shape, sends a
 `RIGHT` key event, and asserts that the player's `position.x` increases. A unit
 test checks that a private event reaches the target's outbox as a separate frame
 and not another player's. The suite takes about three to four seconds and is
-not parallel-safe because it uses a fixed port. Specs are validated separately
-with `openspec validate --specs --strict`.
+not parallel-safe because it uses a fixed port. The Godot client is not exercised
+by the Go suite; rebuild it with the export commands above and verify in a
+browser. Specs are validated separately with `openspec validate --specs --strict`.
 
 ## Limitations
 
@@ -297,6 +322,9 @@ with `openspec validate --specs --strict`.
   spatial queries must run on the room actor goroutine.
 - Room UUID is the only access capability; there is no auth, rate limiting, TLS,
   health endpoint, metrics, or multi-instance support.
+- The Go server never builds or checks the client: `/` returns 404 until the Web
+  export exists under `client/build/web`. The Godot Web payload (`index.wasm`) is
+  tens of megabytes, so first load is much heavier than the old Canvas client.
 - Slow clients skip intermediate snapshots; each outbox keeps only the latest
   payload per type.
 - `SendTo` calls coalesce to the last private payload until the writer drains the

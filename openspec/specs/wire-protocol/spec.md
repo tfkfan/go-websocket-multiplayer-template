@@ -19,6 +19,24 @@ upgrades at `WS_ENDPOINT`; exact paths SHALL take precedence over the `/` catch-
 - **WHEN** a client requests a path that does not exist under the assets directory
 - **THEN** the server returns 404
 
+### Requirement: Web export asset delivery
+
+The server SHALL deliver the Godot Web export as static files: `/` SHALL return the exported
+`index.html`, `.wasm` files SHALL be served as `application/wasm`, and `.pck` files SHALL be
+served as `application/octet-stream`.
+
+#### Scenario: Root serves the export entry document
+- **WHEN** a client requests `/` and the asset root contains `index.html`
+- **THEN** the server returns that document as HTML
+
+#### Scenario: WebAssembly module has its content type
+- **WHEN** a client requests a `.wasm` file from the export
+- **THEN** the response content type is `application/wasm`
+
+#### Scenario: Game pack has its content type
+- **WHEN** a client requests a `.pck` file from the export
+- **THEN** the response content type is `application/octet-stream`
+
 ### Requirement: Room creation response
 
 `POST` to `ROOM_ENDPOINT` SHALL return HTTP 200 with the new room UUID as plain text and SHALL

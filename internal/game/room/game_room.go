@@ -240,8 +240,9 @@ func (gr *GameRoom) refreshSpatial() {
 
 func (gr *GameRoom) OnUpdate(dt float64) {
 	gr.reapStopped()
-	gr.handleCollisions(gr.movePlayers(dt))
+	moved := gr.movePlayers(dt)
 	gr.refreshSpatial()
+	gr.handleCollisions(moved)
 	gr.publishSnapshot()
 }
 

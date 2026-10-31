@@ -45,7 +45,7 @@ func NewGameServer(cfg *config.Config) (*GameServer, chan error, error) {
 		serverCancel: cancel,
 		cfg:          cfg,
 	}
-	srv.serveMux.Handle("/", http.FileServer(http.Dir(cfg.AssetsDir)))
+	srv.serveMux.Handle("/", assetHandler(cfg.AssetsDir))
 	srv.serveMux.HandleFunc(cfg.WebSocketEndpoint, srv.handleWsConnection)
 	srv.serveMux.HandleFunc(cfg.RoomEndpoint, srv.handleRoom)
 
