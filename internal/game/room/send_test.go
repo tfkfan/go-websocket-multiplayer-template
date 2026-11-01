@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/tfkfan/gogame/internal/game/entity"
+	"github.com/tfkfan/gogame/internal/game/event"
 	"github.com/tfkfan/gogame/internal/game/player"
 	"github.com/tfkfan/gogame/internal/shared"
 )
@@ -28,7 +30,7 @@ func TestSendToOnlyTarget(t *testing.T) {
 	}
 
 	for _, message := range []string{"old", "secret"} {
-		if err := gr.SendTo(first.Id, MsgPrivate, map[string]string{"message": message}); err != nil {
+		if err := gr.SendTo(first.Id, event.MsgPrivate, map[string]string{"message": message}); err != nil {
 			t.Fatalf("SendTo failed: %v", err)
 		}
 	}
@@ -41,7 +43,7 @@ func TestSendToOnlyTarget(t *testing.T) {
 	}
 
 	var privateEvent struct {
-		Type MessageType `json:"type"`
+		Type event.MessageType `json:"type"`
 		Data struct {
 			Message string `json:"message"`
 		} `json:"data"`
@@ -49,7 +51,7 @@ func TestSendToOnlyTarget(t *testing.T) {
 	if err := json.Unmarshal(privateMsg, &privateEvent); err != nil {
 		t.Fatalf("invalid private event: %v", err)
 	}
-	if privateEvent.Type != MsgPrivate || privateEvent.Data.Message != "secret" {
+	if privateEvent.Type != event.MsgPrivate || privateEvent.Data.Message != "secret" {
 		t.Fatalf("unexpected private event: %+v", privateEvent)
 	}
 
@@ -58,12 +60,12 @@ func TestSendToOnlyTarget(t *testing.T) {
 		t.Fatal("target player received no update")
 	}
 	var firstEnvelope struct {
-		Type MessageType `json:"type"`
+		Type event.MessageType `json:"type"`
 	}
 	if err := json.Unmarshal(firstUpdate, &firstEnvelope); err != nil {
 		t.Fatalf("invalid target update: %v", err)
 	}
-	if firstEnvelope.Type != MsgUpdate {
+	if firstEnvelope.Type != event.MsgUpdate {
 		t.Fatalf("unexpected target update: %+v", firstEnvelope)
 	}
 	if extra := first.NextOutbound(); extra != nil {
@@ -75,29 +77,29 @@ func TestSendToOnlyTarget(t *testing.T) {
 		t.Fatal("non-target player received no update")
 	}
 	var secondEnvelope struct {
-		Type MessageType `json:"type"`
+		Type event.MessageType `json:"type"`
 	}
 	if err := json.Unmarshal(secondMsg, &secondEnvelope); err != nil {
 		t.Fatalf("invalid non-target update: %v", err)
 	}
-	if secondEnvelope.Type != MsgUpdate {
+	if secondEnvelope.Type != event.MsgUpdate {
 		t.Fatalf("unexpected non-target update: %+v", secondEnvelope)
 	}
 	if extra := second.NextOutbound(); extra != nil {
 		t.Fatal("non-target player received a private frame")
 	}
 
-	if err := gr.SendTo(uuid.New(), MsgPrivate, nil); !errors.Is(err, ErrPlayerNotFound) {
+	if err := gr.SendTo(uuid.New(), event.MsgPrivate, nil); !errors.Is(err, ErrPlayerNotFound) {
 		t.Fatalf("expected ErrPlayerNotFound, got %v", err)
 	}
 
 	first.Stop()
-	if err := gr.SendTo(first.Id, MsgPrivate, nil); !errors.Is(err, ErrPlayerNotFound) {
+	if err := gr.SendTo(first.Id, event.MsgPrivate, nil); !errors.Is(err, ErrPlayerNotFound) {
 		t.Fatalf("expected ErrPlayerNotFound for stopped player, got %v", err)
 	}
 
 	cancel()
-	if err := gr.SendTo(second.Id, MsgPrivate, nil); !errors.Is(err, ErrRoomClosed) {
+	if err := gr.SendTo(second.Id, event.MsgPrivate, nil); !errors.Is(err, ErrRoomClosed) {
 		t.Fatalf("expected ErrRoomClosed for closed room, got %v", err)
 	}
 }
@@ -119,7 +121,7 @@ func TestPublishToConcurrentWithSnapshots(t *testing.T) {
 	go func() {
 		defer close(done)
 		for i := 0; i < calls; i++ {
-			if err := gr.PublishTo(p.Id, player.CustomType, MsgPrivate, i); err != nil {
+			if err := gr.PublishTo(p.Id, entity.CustomType, event.MsgPrivate, i); err != nil {
 				t.Errorf("PublishTo failed: %v", err)
 				return
 			}

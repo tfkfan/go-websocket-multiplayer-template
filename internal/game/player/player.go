@@ -2,13 +2,14 @@ package player
 
 import (
 	"context"
-	"math"
+	math "math"
 	"net/http"
 	"sync/atomic"
 
 	"github.com/coder/websocket"
 	"github.com/google/uuid"
-	"github.com/tfkfan/gogame/internal/network"
+	"github.com/tfkfan/gogame/internal/game/entity"
+	m "github.com/tfkfan/gogame/internal/math"
 	"github.com/tfkfan/gogame/internal/spatial"
 )
 
@@ -29,19 +30,18 @@ var keyBits = map[string]uint32{
 }
 
 type Player struct {
-	Id uuid.UUID
-
-	ws     *websocket.Conn
-	ctx    context.Context
-	cancel context.CancelFunc
-
+	BasePlayer
 	keys atomic.Uint32
 
-	position Vec2
-	radius   float64
-	color    string
+	radius float64
+	color  string
+}
 
-	outbox *outbox
+type State struct {
+	ID       uuid.UUID    `json:"id"`
+	Position spatial.Vec2 `json:"position"`
+	Radius   float64      `json:"radius"`
+	Color    string       `json:"color"`
 }
 
 func ExtractPlayerFromRequest(r *http.Request, ws *websocket.Conn, ctx context.Context) (*Player, error) {
@@ -54,38 +54,46 @@ func ExtractPlayerFromRequest(r *http.Request, ws *websocket.Conn, ctx context.C
 
 func NewPlayer(ctx context.Context, id uuid.UUID, ws *websocket.Conn) *Player {
 	playerCtx, cancel := context.WithCancel(ctx)
-	return &Player{
+	p := &Player{
 		Id:     id,
+		Ctx:    playerCtx,
+		Cancel: cancel,
 		ws:     ws,
-		ctx:    playerCtx,
-		cancel: cancel,
-		outbox: newOutbox(),
+		keys:   atomic.Uint32{},
+		radius: 0,
+		color:  "",
+		Outbox: entity.NewOutbox(),
+	}
+
+	p.BasePlayer.IGameEntity = p
+	return p
+}
+
+func (p *Player) Snapshot() State {
+	return State{
+		ID:       p.Id,
+		Position: p.Position,
+		Radius:   p.radius,
+		Color:    p.color,
 	}
 }
 
-func (p *Player) Spawn(pos Vec2, radius float64, color string) {
-	p.position = pos
+func (p *Player) Spawn(world entity.World, pos spatial.Vec2, radius float64, color string) {
+	p.BasePlayer.GameEntity.Position = pos
 	p.radius = radius
+	p.World = world
 	p.color = color
-}
-
-func (p *Player) Key() string {
-	return p.Id.String()
 }
 
 func (p *Player) Shape() spatial.Shape {
 	return spatial.Circle{
-		Center: spatial.Vec2{X: p.position.X, Y: p.position.Y},
+		Center: spatial.Vec2{X: p.Position.X, Y: p.Position.Y},
 		Radius: p.radius,
 	}
 }
 
-func (p *Player) Solid() bool {
-	return true
-}
-
-func (p *Player) MoveTo(center spatial.Vec2) {
-	p.position = Vec2{X: center.X, Y: center.Y}
+func (p *Player) Update(dt float64) {
+	p.move(dt)
 }
 
 func (p *Player) ApplyKey(key string, pressed bool) bool {
@@ -106,11 +114,7 @@ func (p *Player) ApplyKey(key string, pressed bool) bool {
 	}
 }
 
-func (p *Player) Update(dt, width, height float64) {
-	p.move(dt, width, height)
-}
-
-func (p *Player) move(dt, width, height float64) {
+func (p *Player) move(dt float64) {
 	mask := p.keys.Load()
 
 	dx, dy := 0.0, 0.0
@@ -131,43 +135,6 @@ func (p *Player) move(dt, width, height float64) {
 		dy /= math.Sqrt2
 	}
 
-	p.position.X = clamp(p.position.X+dx*Speed*dt, p.radius, width-p.radius)
-	p.position.Y = clamp(p.position.Y+dy*Speed*dt, p.radius, height-p.radius)
-}
-
-func clamp(v, lo, hi float64) float64 {
-	if hi < lo {
-		return lo
-	}
-	if v < lo {
-		return lo
-	}
-	if v > hi {
-		return hi
-	}
-	return v
-}
-
-func (p *Player) Read(ctx context.Context) ([]byte, error) {
-	_, msg, err := p.ws.Read(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return msg, nil
-}
-
-func (p *Player) Write(ctx context.Context, msg []byte) error {
-	return p.ws.Write(ctx, websocket.MessageText, msg)
-}
-
-func (p *Player) Done() <-chan struct{} {
-	return p.ctx.Done()
-}
-
-func (p *Player) Stop() {
-	p.cancel()
-}
-
-func (p *Player) CloseWebSocket(statusCode websocket.StatusCode, errorMessage string) {
-	network.CloseWebSocket(p.ws, statusCode, errorMessage)
+	p.Position.X = m.Clamp(p.Position.X+dx*Speed*dt, p.radius, p.World.Width-p.radius)
+	p.Position.Y = m.Clamp(p.Position.Y+dy*Speed*dt, p.radius, p.World.Height-p.radius)
 }

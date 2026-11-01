@@ -1,69 +1,89 @@
 # server-configuration Specification
 
 ## Purpose
-Defines startup configuration loading, validation, and the compiled-in world constants that
-operators and clients rely on.
+
+Defines how the server reads and validates startup configuration from `.env` and the process
+environment, bounds the configurable values, wires endpoints and assets, and fixes the gameplay
+constants that environment variables cannot change.
 
 ## Requirements
 
-### Requirement: Mandatory .env loading
+### Requirement: Mandatory environment file
 
-Startup SHALL fail when `.env` is missing from the working directory, even when environment
-variables are already set; existing process environment variables SHALL take precedence over
-file values.
+Startup SHALL load a `.env` file from the process working directory and SHALL fail when that
+file is absent or unreadable. Values already present in the process environment SHALL take
+precedence over the file values.
 
-#### Scenario: Missing .env fails startup
-- **WHEN** the process starts in a directory without `.env`
-- **THEN** startup fails with a configuration error
+#### Scenario: Missing file aborts startup
+
+- **WHEN** the server starts in a directory without a readable `.env` file
+- **THEN** startup fails with a configuration error and no listener is opened
 
 #### Scenario: Process environment wins
+
 - **WHEN** a variable is set both in `.env` and in the process environment
 - **THEN** the process environment value is used
 
 ### Requirement: Required variables
 
-The server SHALL require `PORT`, `WS_ENDPOINT`, `ROOM_ENDPOINT`, `ASSETS_DIR`, `ROOM_TIMEOUT`,
-and `ROOM_CAPACITY`; a missing variable SHALL fail startup.
+Startup SHALL require `PORT`, `WS_ENDPOINT`, `ROOM_ENDPOINT`, `ASSETS_DIR`, `ROOM_TIMEOUT`, and
+`ROOM_CAPACITY`, and SHALL fail naming the first missing variable.
 
 #### Scenario: Missing variable fails startup
-- **WHEN** any required variable is absent
-- **THEN** startup fails with an error naming the missing variable
+
+- **WHEN** any required variable is unset after `.env` loading
+- **THEN** startup fails with an error that names that variable
 
 ### Requirement: Value validation
 
-`ROOM_TIMEOUT` SHALL parse as a positive duration and `ROOM_CAPACITY` as a positive integer;
-invalid or non-positive values SHALL fail startup.
+`ROOM_TIMEOUT` SHALL parse as a Go duration and SHALL be positive. `ROOM_CAPACITY` SHALL parse
+as an integer and SHALL be positive. A value that fails to parse or is not positive SHALL abort
+startup.
 
 #### Scenario: Invalid duration fails startup
-- **WHEN** `ROOM_TIMEOUT` is not a valid duration or is zero or negative
+
+- **WHEN** `ROOM_TIMEOUT` is not a duration string
+- **THEN** startup fails with a configuration error
+
+#### Scenario: Non-positive duration fails startup
+
+- **WHEN** `ROOM_TIMEOUT` parses to zero or a negative duration
 - **THEN** startup fails with a configuration error
 
 #### Scenario: Invalid capacity fails startup
-- **WHEN** `ROOM_CAPACITY` is not an integer or is zero or negative
+
+- **WHEN** `ROOM_CAPACITY` is not an integer
+- **THEN** startup fails with a configuration error
+
+#### Scenario: Non-positive capacity fails startup
+
+- **WHEN** `ROOM_CAPACITY` parses to zero or a negative integer
 - **THEN** startup fails with a configuration error
 
 ### Requirement: Endpoint and asset wiring
 
-`PORT` SHALL be passed to `net.Listen`; `WS_ENDPOINT` and `ROOM_ENDPOINT` SHALL be registered on
-the HTTP mux; `ASSETS_DIR` SHALL be the root of the built Godot Web export, and a missing or
-unbuilt directory SHALL yield 404 responses. Endpoint patterns SHALL not be validated beyond the
-mux behavior, and the Godot client SHALL keep its own hard-coded endpoint paths.
+`PORT` SHALL be passed to the TCP listener verbatim, `WS_ENDPOINT` SHALL register the WebSocket
+upgrade handler, `ROOM_ENDPOINT` SHALL register room creation, and `ASSETS_DIR` SHALL be the
+static file root. The served client hard-codes `/room` and `/ws`, so changing those variables
+SHALL also require editing `client/scripts/protocol.gd`.
 
 #### Scenario: Missing assets directory yields 404s
-- **WHEN** `ASSETS_DIR` points to a directory that does not exist or has no `index.html`
-- **THEN** asset requests return 404 and the WebSocket and room endpoints still work
 
-#### Scenario: Changing endpoints also requires a client change
-- **WHEN** an endpoint variable differs from the value hard-coded in the Godot client
-- **THEN** the Godot client cannot reach that endpoint until it is updated
+- **WHEN** the server serves an asset path that does not exist under `ASSETS_DIR`
+- **THEN** the response is 404
+
+#### Scenario: Changing endpoints requires a client change
+
+- **WHEN** `WS_ENDPOINT` or `ROOM_ENDPOINT` differs from `/ws` or `/room`
+- **THEN** the unmodified client no longer reaches those handlers
 
 ### Requirement: Fixed gameplay constants
 
-World width and height (1200 and 800), player radius (25), tick rate (30), movement speed (260),
-room command queue depth (64), spawn ring factor (0.32), and the 8-color palette SHALL be
-compiled in and SHALL NOT be configurable through environment variables.
+World size (`1200 x 800`), player radius (`25`), tick rate (`30` Hz), movement speed (`260`
+units/s), palette colors, and the latest-per-type outbound policy SHALL be compiled into the
+server and SHALL NOT be overridable through configuration.
 
 #### Scenario: Environment cannot change gameplay constants
-- **WHEN** the server starts with any environment values
-- **THEN** the world dimensions, radius, tick rate, and movement speed remain the compiled-in
-  values sent to clients
+
+- **WHEN** the process environment defines arbitrary additional variables
+- **THEN** world size, player radius, tick rate, and movement speed stay at their compiled values

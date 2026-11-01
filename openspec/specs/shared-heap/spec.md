@@ -1,57 +1,69 @@
 # shared-heap Specification
 
 ## Purpose
-Defines the shared generic min-heap used by the scheduler, including construction, ordering, and
-empty-safe operations.
+
+Defines the generic typed heap used by the scheduler: construction with an ordering function,
+push, pop, peek, and length, with empty-safe reads.
 
 ## Requirements
 
 ### Requirement: Construction
 
-`NewHeap(less)` SHALL require a non-nil `less` function implementing a strict weak ordering and
-SHALL initialize the heap before it is used; the zero value SHALL NOT be used for pushes.
+A heap SHALL be created from an ordering function and SHALL start empty. A nil ordering function
+SHALL be rejected with a panic.
 
 #### Scenario: Nil ordering is rejected
-- **WHEN** a heap is created with a nil `less` function
-- **THEN** construction fails instead of returning an unusable heap
+
+- **WHEN** a heap is created with a nil ordering function
+- **THEN** construction panics
 
 #### Scenario: New heap is empty
-- **WHEN** a heap is created with a valid `less` function
-- **THEN** its length is zero and peek reports no element
+
+- **WHEN** a heap is created with a valid ordering function
+- **THEN** its length is zero and both pop and peek report no element
 
 ### Requirement: Ordering
 
-`Push` SHALL insert an element and `Pop` SHALL remove and return the minimum according to
-`less`; elements that compare equal SHALL be ordered consistently by `less`.
+The heap SHALL return elements in the order defined by the ordering function, with the minimum
+according to that function available first. Ties SHALL be resolved by the same function, so a
+strict total order yields a stable sequence.
 
 #### Scenario: Elements pop in ascending order
-- **WHEN** unsorted values are pushed and then popped until empty
-- **THEN** the values come out in non-decreasing order
+
+- **WHEN** several elements are pushed in arbitrary order and popped until empty
+- **THEN** they come out in ascending order
 
 #### Scenario: Ties follow the ordering function
-- **WHEN** elements compare equal by their primary key but differ in a tie-break field used by
-  `less`
-- **THEN** they pop in the order defined by the tie-break
+
+- **WHEN** two elements compare equal
+- **THEN** their relative order is decided by the ordering function's tie-breaking rule
 
 ### Requirement: Empty-safe operations
 
-`Pop` and `Peek` SHALL return the zero value and `false` when the heap is empty; `Len` SHALL
-return zero. These operations SHALL be safe on a constructed heap and SHALL NOT panic.
+Pop and peek SHALL report false when the heap is empty and SHALL NOT panic. Length SHALL reflect
+the number of stored elements after every operation.
 
 #### Scenario: Empty heap reports no element
-- **WHEN** `Pop` or `Peek` is called on an empty heap
-- **THEN** it returns the zero value with `false`
+
+- **WHEN** pop or peek runs on an empty heap
+- **THEN** it returns the zero value and false
 
 #### Scenario: Length reflects contents
+
 - **WHEN** elements are pushed and popped
-- **THEN** `Len` matches the number of elements currently stored
+- **THEN** length matches the number stored
 
 ### Requirement: Encapsulated typed API
 
-The heap SHALL expose typed `Push`, `Pop`, `Peek`, and `Len` operations and SHALL keep the
-generic `container/heap` machinery an internal detail, so callers do not import or drive
-`container/heap` themselves.
+The heap SHALL expose typed push, pop, peek, and length operations and SHALL NOT require callers
+to use the standard library heap interface directly.
 
 #### Scenario: Generic element types are supported
-- **WHEN** a caller instantiates the heap for a custom element type with its own ordering
-- **THEN** push and pop work without any type-specific code in the heap
+
+- **WHEN** the heap is instantiated with a scheduler task type
+- **THEN** push, pop, and peek exchange values of that type without assertions at call sites
+
+#### Scenario: Stored values are preserved
+
+- **WHEN** an element is pushed and later popped
+- **THEN** it equals the value that was pushed

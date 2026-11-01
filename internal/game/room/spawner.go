@@ -4,7 +4,7 @@ import (
 	"math"
 
 	"github.com/tfkfan/gogame/internal/config"
-	"github.com/tfkfan/gogame/internal/game/player"
+	"github.com/tfkfan/gogame/internal/spatial"
 )
 
 type Spawner struct {
@@ -51,11 +51,11 @@ func (s *Spawner) nextSlot() int {
 	return slot
 }
 
-func (s *Spawner) slotPosition(slot int) player.Vec2 {
+func (s *Spawner) slotPosition(slot int) spatial.Vec2 {
 	slots := max(s.room.cfg.RoomCapacity, 1)
 	angle := 2*math.Pi*float64(slot)/float64(slots) - math.Pi/2
 	ring := math.Min(config.WorldWidth, config.WorldHeight) * 0.32
-	return player.Vec2{
+	return spatial.Vec2{
 		X: config.WorldWidth/2 + ring*math.Cos(angle),
 		Y: config.WorldHeight/2 + ring*math.Sin(angle),
 	}

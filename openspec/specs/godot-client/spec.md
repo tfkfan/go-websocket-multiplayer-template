@@ -1,164 +1,193 @@
 # godot-client Specification
 
 ## Purpose
-Defines the Godot client that players run in the browser: its project and export layout, lobby and
-room flow, protocol session, field rendering, movement input, status reporting, and responsive
-layout.
+
+Defines the Godot 4.7 Web client that ships in the served export: project and export settings,
+the browser bridge, lobby and session flow, field rendering, movement input, status statistics,
+and responsive layout.
 
 ## Requirements
 
 ### Requirement: Godot client project
 
-The client SHALL be a Godot 4.7 project rooted at `client/` with `project.godot`, scene files,
-GDScript sources, and a committed Web export preset. Application HTML, JavaScript, and CSS sources
-SHALL NOT exist in the repository.
+The client SHALL be a Godot 4.7 project using the GL Compatibility renderer, with the main scene
+as the startup scene, the network script as an autoload, and a `1280 x 800` base viewport. The
+Web preset SHALL export a single-threaded build to `build/web/index.html`.
 
 #### Scenario: Project opens in Godot 4.7
-- **WHEN** the `client/` directory is opened with Godot 4.7
-- **THEN** the project resolves its main scene and reports no missing resources
 
-#### Scenario: Legacy web sources are gone
-- **WHEN** the repository is inspected for the client implementation
-- **THEN** no hand-written HTML, JavaScript, or CSS application sources remain
-
-### Requirement: Web export build
-
-The client SHALL be exportable as a single-threaded Godot Web build named `index.html` into
-`client/build/web`, and the generated export output SHALL NOT be tracked in version control.
+- **WHEN** the project is opened in Godot 4.7
+- **THEN** the main scene loads and the network autoload is available as `Network`
 
 #### Scenario: Export produces the served tree
-- **WHEN** the documented Web export command runs against `client/`
-- **THEN** `client/build/web` contains `index.html` and its matching `.js`, `.wasm`, and `.pck`
-  files
+
+- **WHEN** the Web preset is exported
+- **THEN** `build/web/index.html` and its payload files exist for the server to serve
 
 #### Scenario: Build output stays untracked
-- **WHEN** generated export files exist under `client/build/web`
-- **THEN** the repository ignores them
 
-### Requirement: Served entry point and room link
+- **WHEN** the export is generated
+- **THEN** the build directory remains excluded from version control
 
-The client SHALL load from `/` and SHALL accept a room UUID from the `room` query parameter. It
-SHALL keep that parameter in the address while a room is active and SHALL display a shareable room
-link.
+### Requirement: Browser bridge and desktop fallback
+
+In a browser the client SHALL derive its HTTP origin from `window.location`, its WebSocket
+origin from the page protocol and host, and the requested room from the `room` query parameter.
+Outside a browser it SHALL fall back to `127.0.0.1:8080`. The client SHALL update the address bar
+with `history.replaceState` when a room is created or left, and SHALL use the browser clipboard
+when available.
 
 #### Scenario: Shared link joins the room
-- **WHEN** the page is opened with a `room` query parameter holding a valid UUID
-- **THEN** the client connects to that room without further user action
+
+- **WHEN** the page is opened with `?room=<uuid>`
+- **THEN** the client connects to that room without further interaction
 
 #### Scenario: Creating a room updates the address
-- **WHEN** the player creates a room
-- **THEN** the address carries the new `room` parameter and the room link is shown
+
+- **WHEN** room creation succeeds
+- **THEN** the address bar carries `?room=<uuid>` and the room row shows the link
+
+#### Scenario: Copy link reports the outcome
+
+- **WHEN** the copy button is pressed
+- **THEN** the status line reports success or failure of the clipboard write
 
 ### Requirement: Lobby actions
 
-The client SHALL offer Create room, Copy link, and Leave actions. Create room SHALL be disabled
-while a request is in flight and SHALL report a visible error when the request fails.
+The lobby SHALL create rooms with `POST ROOM_ENDPOINT` under a 10 second timeout and SHALL report
+transport failures, non-200 responses, and empty bodies. Leaving a room SHALL close the socket
+with a normal closure and reset the lobby.
 
 #### Scenario: Create room succeeds
-- **WHEN** the player activates Create room and the server returns a room UUID
-- **THEN** the client shows the room and switches to the in-room controls
+
+- **WHEN** room creation returns a UUID
+- **THEN** the client stores the room, shows its link, and connects
 
 #### Scenario: Create room fails
-- **WHEN** room creation returns a non-success response or no room UUID
-- **THEN** the client shows an error status and leaves Create room enabled
 
-#### Scenario: Copy link reports the outcome
-- **WHEN** the player activates Copy link
-- **THEN** the client copies the room URL and reports whether copying succeeded
+- **WHEN** the request fails, returns a non-200 status, or returns an empty body
+- **THEN** the create button re-enables and the status line shows the failure
 
 #### Scenario: Leave closes the session
-- **WHEN** the player activates Leave
-- **THEN** the client closes the socket, clears the room view, and reports that the room was left
+
+- **WHEN** the leave button is pressed
+- **THEN** the socket closes with code 1000 and the lobby is restored
 
 ### Requirement: Room session
 
-The client SHALL connect to `WS_ENDPOINT` with the active room UUID as the `room` query parameter
-and SHALL exchange JSON envelopes carrying numeric message types. It SHALL consume JOIN_SUCCESS
-(4) and UPDATE (100), keep the latest UPDATE as the rendered state, and handle close codes 1001
-and 1014 as specified.
+The client SHALL connect to `WS_ENDPOINT?room=<uuid>`, parse the JSON envelope, and emit join
+data for type 4, update data for type 100, failure messages for type 11, and close events with
+code and reason. Update data SHALL drive the field and statistics. A close with 1001 SHALL reset
+the room and report that the room closed; other codes SHALL show a disconnected status.
 
 #### Scenario: Session starts
-- **WHEN** a room is active and the socket opens
-- **THEN** the client reports the connection and displays world dimensions and tick rate from
-  JOIN_SUCCESS
+
+- **WHEN** the socket opens and JOIN_SUCCESS arrives
+- **THEN** the client records its player identifier and the world size
 
 #### Scenario: Updates drive the render
+
 - **WHEN** an UPDATE arrives
-- **THEN** the client renders that snapshot and reports the current player count and tick
+- **THEN** the field renders the reported players, world size, and world state
 
 #### Scenario: Room timeout closes the session
-- **WHEN** the socket closes with code 1001
-- **THEN** the client clears the room and reports that the room closed
+
+- **WHEN** the socket closes with 1001
+- **THEN** the client clears state, resets to the lobby, and shows that the room closed
 
 #### Scenario: Admission failure is reported
-- **WHEN** the socket closes with a code other than 1001 while not leaving
-- **THEN** the client reports the disconnect with its code and reason
+
+- **WHEN** a FAILURE frame or any other close code arrives
+- **THEN** the status line reports the message or the code and reason
+
+#### Scenario: Unknown frames are ignored
+
+- **WHEN** a text frame has an unhandled type or payload shape
+- **THEN** the client ignores it and keeps the session open
 
 ### Requirement: Field rendering
 
-The client SHALL draw the shared 1200 × 800 field fitted into the available stage while preserving
-its aspect ratio. It SHALL draw every player from the latest UPDATE at its server position with
-its radius and color, and SHALL mark the local player with a distinct outline and a `you` label.
+The field SHALL fit the `1200 x 800` world into the stage preserving aspect ratio, centered with
+the remainder as background, draw an 80-unit grid and a border, and draw one circle per player
+with its radius scaled by the fit factor. Player color SHALL come from the update payload with a
+fallback when absent or invalid. The local player SHALL have a light outline and a `you` label.
+An empty field SHALL show a waiting message while a room is active and a join prompt otherwise.
 
 #### Scenario: Field fits the stage
-- **WHEN** the window is resized
-- **THEN** the field keeps its 3:2 aspect ratio and stays fully visible
+
+- **WHEN** the stage is resized
+- **THEN** the world is letterboxed with the same aspect ratio and redrawn
 
 #### Scenario: Players render from the snapshot
+
 - **WHEN** an UPDATE lists players
-- **THEN** each is drawn once at its position, radius, and color
+- **THEN** each player is drawn at its reported position, radius, and color
 
 #### Scenario: Local player is identified
-- **WHEN** the snapshot includes the joined player
-- **THEN** that circle carries the distinct outline and the `you` label
+
+- **WHEN** the update contains the client's player identifier
+- **THEN** that circle is outlined and labelled `you`
 
 #### Scenario: Empty state is shown
-- **WHEN** no snapshot has been received
-- **THEN** the field shows the waiting or create-a-room prompt instead of players
+
+- **WHEN** no update has arrived
+- **THEN** the field shows the waiting or join prompt text
 
 ### Requirement: Movement input
 
-The client SHALL treat a direction as pressed while any of its bound keys is held, map W and Up to
-UP, S and Down to DOWN, A and Left to LEFT, and D and Right to RIGHT, and SHALL send exactly one
-press on activation and one release on deactivation. It SHALL release every held direction when
-the window loses focus, the page is hidden, or the session ends.
+The client SHALL poll `W`, `S`, `A`, `D` and the arrow keys each frame and send a key event only
+when a direction's state changes. Losing focus or page visibility SHALL release every direction,
+and the client SHALL suppress re-sending those releases until the physical key is released.
 
 #### Scenario: Direction transition is sent once
-- **WHEN** a player holds a movement key
-- **THEN** the client sends one press event for that direction and no repeats
+
+- **WHEN** a key is held across frames
+- **THEN** only the initial press is sent
 
 #### Scenario: Overlapping keys keep the direction
-- **WHEN** both keys bound to a direction are held and only one is released
-- **THEN** the direction stays pressed and no release event is sent
+
+- **WHEN** an arrow key and its letter counterpart are pressed together
+- **THEN** the direction stays pressed until both are released
 
 #### Scenario: Focus loss releases input
-- **WHEN** the window loses focus or the page becomes hidden while directions are held
-- **THEN** the client sends a release for each held direction
+
+- **WHEN** the window loses focus or the page becomes hidden
+- **THEN** releases are sent for all pressed directions and no key remains held
 
 ### Requirement: Status and statistics
 
-The client SHALL show the connection or error status, and while a room is active SHALL show the
-room identifier, player count, local player identifier, local position, and latest tick. It SHALL
-clear room statistics when no state is available.
+The status line SHALL report connection, room, error, and close states. Statistics SHALL show
+the room, player count, local player, local position, and the update tick, and SHALL clear when
+no game state is available. Because UPDATE carries no tick field, the tick statistic SHALL
+display zero.
 
 #### Scenario: Statistics follow the snapshot
-- **WHEN** an UPDATE is applied
-- **THEN** the statistics reflect the room, player count, local position, and tick from that
-  snapshot
+
+- **WHEN** updates arrive
+- **THEN** the player count, local position, and tick lines reflect the latest update
 
 #### Scenario: Statistics clear on close
-- **WHEN** the session closes or the room is left
-- **THEN** the statistics no longer show stale room state
+
+- **WHEN** the session ends or the state is cleared
+- **THEN** the statistics show that no game state is available
+
+#### Scenario: Tick displays zero without a tick field
+
+- **WHEN** an UPDATE omits the tick member
+- **THEN** the tick statistic shows zero
 
 ### Requirement: Responsive layout
 
-The client SHALL place the field and the side panel side by side when the window is at least 900
-pixels wide and SHALL stack them vertically, field first, below that width.
+The layout SHALL place the stage beside a 320-unit side panel when the window is at least 900
+units wide, and SHALL stack the stage above the full-width panel below that width, keeping the
+stage at a 3:2 aspect ratio in the narrow layout.
 
 #### Scenario: Wide window shows the side panel
-- **WHEN** the window is at least 900 pixels wide
-- **THEN** the field and panel appear side by side
+
+- **WHEN** the window is at least 900 units wide
+- **THEN** the panel sits to the right of the stage
 
 #### Scenario: Narrow window stacks the layout
-- **WHEN** the window is narrower than 900 pixels
-- **THEN** the panel moves below the field and both remain visible
+
+- **WHEN** the window is narrower than 900 units
+- **THEN** the stage spans the width above the stacked panel

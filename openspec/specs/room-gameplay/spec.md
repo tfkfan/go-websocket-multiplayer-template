@@ -1,133 +1,159 @@
 # room-gameplay Specification
 
 ## Purpose
-Defines the authoritative world model: input state, movement, tick cadence, and one-sided
-collision response over the room's shared spatial index.
+
+Defines the authoritative simulation each room runs: world containment, latest-state key input,
+server-side movement, tick cadence and time capping, and the ordering and outcome of the
+collision pass that feeds the published snapshot.
 
 ## Requirements
 
 ### Requirement: World bounds and containment
 
-The room SHALL use a 1200 by 800 world with a player radius of 25; every player position SHALL
-stay within `[radius, width-radius]` horizontally and `[radius, height-radius]` vertically.
+The room SHALL own a fixed `1200 x 800` world. Every player position SHALL stay inside the
+rectangle inset by that player's radius, including after spawn, movement, and collision
+correction.
 
 #### Scenario: Player is clamped at a wall
-- **WHEN** a player holds a direction long enough to reach the world edge
-- **THEN** the position stops at the radius-inset boundary and the player remains fully visible
+
+- **WHEN** a player moves toward a world edge
+- **THEN** its position stops at the edge offset by its radius
 
 #### Scenario: Spawn is inside the world
-- **WHEN** a player is spawned on the ring
-- **THEN** its circle is fully contained in the 1200 by 800 world
+
+- **WHEN** a player is admitted
+- **THEN** its spawn position satisfies the inset bounds
 
 ### Requirement: Latest-state key input
 
-Key events for `UP`, `DOWN`, `LEFT`, and `RIGHT` SHALL set or clear the matching movement bit;
-unknown keys SHALL be ignored; repeated key events SHALL collapse to the latest state rather
-than queueing.
+Movement input SHALL be a single atomic bitmask with one bit per direction. Pressing and
+releasing SHALL set and clear the corresponding bit. Repeating the same state SHALL be
+idempotent, and an unknown direction SHALL leave the mask unchanged.
 
 #### Scenario: Press and release update movement bits
-- **WHEN** the client sends a key event setting `RIGHT` and later clears it
-- **THEN** the player moves right between the two events and stops after the clear
 
-#### Scenario: Unknown key is ignored
-- **WHEN** the client sends a key event with a key other than the four movement keys
-- **THEN** no movement bit changes
+- **WHEN** a client sends a press and later a release for a direction
+- **THEN** the bit is set, then cleared
 
 #### Scenario: Repeated events collapse
-- **WHEN** the client sends the same press event multiple times
-- **THEN** the room keeps a single pressed state for that direction
+
+- **WHEN** two presses for the same direction arrive without a release
+- **THEN** the movement state is the set state after both
+
+#### Scenario: Unknown key is ignored
+
+- **WHEN** a direction outside `UP`, `DOWN`, `LEFT`, and `RIGHT` is applied
+- **THEN** the mask is unchanged
 
 ### Requirement: Server-side movement
 
-On each tick the room SHALL move each player at 260 units per second in the pressed directions,
-cancel opposing directions, normalize diagonal movement, and clamp the result to the world
-bounds.
+The server SHALL move each player by `260` world units per second along the held directions,
+integrating over the tick's elapsed time. Diagonal input SHALL be normalized by `sqrt(2)` so it
+is not faster than axis movement, and opposite directions SHALL cancel. Positions SHALL be
+clamped to the inset world bounds after integration.
 
 #### Scenario: Single direction speed
-- **WHEN** a player holds one direction for one second of simulated time
-- **THEN** the position changes by 260 units in that direction, subject to world clamping
+
+- **WHEN** a player holds one direction for `dt` seconds
+- **THEN** it moves `260 * dt` world units along that axis
 
 #### Scenario: Diagonal is normalized
-- **WHEN** a player holds two perpendicular directions for one second
-- **THEN** the straight-line distance moved is 260 units, not 260 times the square root of two
+
+- **WHEN** a player holds two perpendicular directions
+- **THEN** the resulting speed equals the single-direction speed
 
 #### Scenario: Opposing directions cancel
-- **WHEN** a player holds `LEFT` and `RIGHT` at the same time
-- **THEN** the horizontal position does not change
+
+- **WHEN** a player holds both directions of one axis
+- **THEN** no movement occurs on that axis
 
 #### Scenario: Movement is clamped
-- **WHEN** a movement step would cross the world boundary
-- **THEN** the position is clamped to the boundary rather than leaving the world
+
+- **WHEN** movement would carry a player past the world edge
+- **THEN** the position is clamped to the inset boundary
 
 ### Requirement: Tick cadence and time cap
 
-The room actor SHALL advance the simulation 30 times per second, and each tick SHALL use at most
-0.25 seconds of elapsed time.
+Each room SHALL tick at `30` Hz and SHALL use the elapsed wall time since the previous tick as
+`dt`. A `dt` greater than `0.25` seconds SHALL be capped at `0.25` seconds so a delayed tick
+cannot teleport players.
 
 #### Scenario: Delayed tick does not teleport players
-- **WHEN** a tick is delayed well beyond its period
-- **THEN** the elapsed time used for movement is capped at 0.25 seconds and the player moves at
-  most 65 units in that tick
+
+- **WHEN** the actor is delayed well beyond one tick interval
+- **THEN** that tick advances movement by at most `0.25` seconds of travel
 
 ### Requirement: Collision pass ordering
 
-Each tick SHALL reap stopped players, move every player, refresh the room's spatial index once,
-and then detect contacts against that refreshed index; the tick's collision corrections SHALL NOT
-rebuild or update the index, which catches up on the next tick.
+Each tick SHALL run in a fixed order: reap stopped players, move every member in player-key
+order, rebuild the spatial index from the moved positions, detect contacts from that index,
+apply at most one correction per contact, and publish the snapshot. Corrections SHALL NOT be
+written into the index during the pass; they enter it on the next tick's rebuild.
 
 #### Scenario: Contacts use the refreshed index
-- **WHEN** two players move into contact during a tick
-- **THEN** the contact is detected against the positions produced by that tick's movement
+
+- **WHEN** players move into contact during a tick
+- **THEN** detection for that same tick uses their post-movement positions
 
 #### Scenario: Corrections enter the index on the next tick
-- **WHEN** a tick's collision response moves a player
-- **THEN** the published snapshot carries the corrected position and the next tick's refresh
-  indexes it
+
+- **WHEN** a correction moves a player
+- **THEN** the published snapshot reflects it and the index reflects it after the next rebuild
 
 ### Requirement: One-sided collision correction
 
-For each contact the room SHALL move exactly one body out of overlap along the contact normal:
-the only mover when one player moved, or the later mover when both moved; the other body SHALL
-NOT be repositioned, tangential movement SHALL be preserved, and the corrected position SHALL be
-clamped inside the world.
+For each solid contact the room SHALL move exactly one body: the only mover when one player
+moved, the later mover in movement order when both moved, and neither when neither moved. The
+moved body SHALL be displaced along the contact normal by the penetration depth and clamped to
+the inset world bounds. A player that did not move SHALL never be repositioned by a collision.
 
 #### Scenario: Mover keeps moving into contact
-- **WHEN** a player moves toward another player
-- **THEN** it keeps the part of its movement that does not overlap, the other player does not
-  move, and the UPDATE reports both at non-overlapping positions
+
+- **WHEN** a moving player contacts a stationary player
+- **THEN** the moving player is placed at the contact surface and keeps its own motion
 
 #### Scenario: Tangential movement is preserved
-- **WHEN** a player moves diagonally into another player
-- **THEN** moving the player out along the contact normal preserves the remaining movement
-  component instead of reverting the whole step
+
+- **WHEN** a player with an axis and a tangential direction contacts a body
+- **THEN** it retains the tangential component after correction
 
 #### Scenario: Stationary player is untouched
-- **WHEN** a moving player contacts a stationary player
-- **THEN** only the moving player is repositioned and the stationary player stays exactly where
-  it was
+
+- **WHEN** two players overlap and only one moved
+- **THEN** the stationary player's position is unchanged
 
 #### Scenario: Two moving players keep their own motion
-- **WHEN** two players move into contact during the same tick
-- **THEN** only the later mover is repositioned by that contact, the earlier mover keeps its
-  movement, and the final positions do not overlap
+
+- **WHEN** two players move into each other
+- **THEN** the later mover in movement order yields and the earlier mover's position is kept
 
 #### Scenario: Corrected movement stays inside the world
-- **WHEN** a player is moved out of contact near a world edge
-- **THEN** the corrected position is clamped inside the world
 
-#### Scenario: Collision correction precedes the snapshot
-- **WHEN** a tick detects a contact
-- **THEN** the UPDATE frame carries the constrained positions
+- **WHEN** a correction pushes a player toward a world edge
+- **THEN** the corrected position is clamped inside the world
 
 ### Requirement: Deterministic collision resolution
 
-The room SHALL move players and resolve contacts in stable key order, so a head-on pair resolves
-in favor of the earlier mover and results do not depend on membership iteration order.
+Movement SHALL process players in ascending key order, and contacts SHALL be deduplicated and
+reported in `(first key, second key)` order. A tick's outcome SHALL NOT depend on membership
+insertion order.
 
 #### Scenario: Results are order independent
-- **WHEN** the same players and inputs are applied in different membership orders
-- **THEN** every player ends the tick at the same position
+
+- **WHEN** the same players and input are added to two rooms in different orders and ticked
+- **THEN** every player ends at the same position in both rooms
 
 #### Scenario: Head-on contact favors the earlier mover
-- **WHEN** two players move into a head-on contact
-- **THEN** the later mover is repositioned and the earlier mover keeps its position
+
+- **WHEN** two players move straight into each other
+- **THEN** the player that moved earlier keeps its position and the later one is displaced
+
+### Requirement: Snapshot after correction
+
+The UPDATE published for a tick SHALL contain the positions after movement and collision
+correction for every current member.
+
+#### Scenario: Correction is visible in the same tick
+
+- **WHEN** a correction changes a player's position during a tick
+- **THEN** that tick's UPDATE reports the corrected position

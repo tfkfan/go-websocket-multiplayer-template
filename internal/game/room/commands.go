@@ -3,7 +3,7 @@ package room
 import "github.com/tfkfan/gogame/internal/game/player"
 
 type Command interface {
-	apply(*GameRoom) error
+	apply(room IRoom) error
 }
 
 type JoinCommand struct {
@@ -14,10 +14,10 @@ type LeaveCommand struct {
 	Player *player.Player
 }
 
-func (c JoinCommand) apply(gr *GameRoom) error {
+func (c JoinCommand) apply(gr IRoom) error {
 	return gr.OnJoin(c.Player)
 }
 
-func (c LeaveCommand) apply(gr *GameRoom) error {
+func (c LeaveCommand) apply(gr IRoom) error {
 	return gr.OnDisconnect(c.Player)
 }

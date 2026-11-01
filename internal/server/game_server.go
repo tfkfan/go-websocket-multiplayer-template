@@ -13,6 +13,7 @@ import (
 	"github.com/coder/websocket"
 	"github.com/google/uuid"
 	"github.com/tfkfan/gogame/internal/config"
+	"github.com/tfkfan/gogame/internal/game/event"
 	"github.com/tfkfan/gogame/internal/game/player"
 	"github.com/tfkfan/gogame/internal/game/room"
 	"github.com/tfkfan/gogame/internal/network"
@@ -145,17 +146,17 @@ func (srv *GameServer) ReadWebSocket(p *player.Player, gr *room.GameRoom) error 
 }
 
 func (srv *GameServer) handleClientMessage(p *player.Player, raw []byte) {
-	var event room.ClientEvent
-	if err := json.Unmarshal(raw, &event); err != nil {
+	var evt event.ClientEvent
+	if err := json.Unmarshal(raw, &evt); err != nil {
 		log.Printf("invalid message from player %s: %v", p.Id, err)
 		return
 	}
-	if event.Type != room.MsgPlayerKeyDown {
+	if evt.Type != event.MsgPlayerKeyDown {
 		return
 	}
 
-	var key room.KeyEvent
-	if err := json.Unmarshal(event.Data, &key); err != nil {
+	var key event.KeyEvent
+	if err := json.Unmarshal(evt.Data, &key); err != nil {
 		log.Printf("invalid key event from player %s: %v", p.Id, err)
 		return
 	}
@@ -184,7 +185,7 @@ func (srv *GameServer) handleRoom(w http.ResponseWriter, r *http.Request) {
 	srv.rooms[gr.Id] = gr
 	srv.gameServerMu.Unlock()
 
-	go gr.Run(srv.serverCtx, func(room *room.GameRoom) {
+	go gr.Run(srv.serverCtx, func(room *room.BaseRoom) {
 		srv.DeleteGameRoom(room.Id)
 	})
 

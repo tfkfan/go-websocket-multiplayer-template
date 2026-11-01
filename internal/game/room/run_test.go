@@ -24,7 +24,7 @@ func TestRoomTimeoutClosesRoom(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		gr.Run(context.Background(), func(*GameRoom) {
+		gr.Run(context.Background(), func(room *BaseRoom) {
 			close(closed)
 		})
 	}()

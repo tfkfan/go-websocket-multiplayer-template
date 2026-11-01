@@ -16,7 +16,9 @@ full state 30 times per second.
 - Every 1/30 s the room actor serializes one full `UPDATE` snapshot and publishes
   it to every player; clients redraw from it rather than predicting state.
 - Rooms expire after `ROOM_TIMEOUT`; clients receive a `1001 Going Away` close.
-  Invalid, full, or closed rooms close with `1014`.
+  An invalid, unknown, or already-closed room fails the upgrade with `1014`. A
+  full room or duplicate player currently receives neither join data nor a
+  close frame (recorded in the specs).
 
 The game is intentionally a demo/template: there is no authentication,
 persistence, reconnect, scoring, TLS, or multi-process state. The
@@ -26,8 +28,8 @@ behavioral contract is maintained as OpenSpec capability specs in
 
 ## Architecture
 
-- One **room actor** (`GameRoom.Run`) owns membership, spawn slots, tick count,
-  and all player positions. Joins and leaves are commands to that actor.
+- One **room actor** (`GameRoom.Run`) owns membership, spawn slots, and all
+  player positions. Joins and leaves are commands to that actor.
 - Each connection has exactly **one reader** (the HTTP handler) and **one
   writer** goroutine. There is no per-player inbound consumer.
 - Movement keys are an atomic bitmask updated by the reader; the room tick reads
@@ -64,14 +66,30 @@ when convenient.
 
 ## Requirements
 
-- Go 1.27 or newer
+| Tool | Version | Needed for |
+| --- | --- | --- |
+| [Go](https://go.dev/dl/) | `1.27.3` or newer | building, running, and testing the server; `go.mod` declares `go 1.27.3` |
+| [Godot](https://godotengine.org/download) | `4.7` with the Web export templates | rebuilding and re-exporting the client; the project targets `4.7` in `client/project.godot` |
+| [OpenSpec CLI](https://openspec.dev/) | `1.16.0` or newer | the spec workflow, validation, and archive (`openspec --version`) |
+| Browser | WebGL 2 with WebSocket support | playing the Godot Web export |
+
+Also required:
+
 - A `.env` file in the working directory (checked in; all six values are required)
 - The configured port free (sample: `8080`)
-- A WebGL 2 browser with WebSocket support
-- Godot 4.7 with the Web export templates installed (only needed to rebuild the
-  client)
-- OpenSpec CLI and an agent with the `/opsx:*` commands are optional and only
-  needed for the spec-driven development workflow
+- An agent with the `/opsx:*` commands is optional and only needed for the
+  assistant-driven spec workflow; the OpenSpec CLI alone can list, validate, and
+  archive
+
+This checkout is set up for Go `1.27.3`, Godot `4.7`, and OpenSpec CLI `1.16.0`.
+Godot is only needed when rebuilding the client; the exported files under
+`client/build/web` are enough to serve the game.
+
+```bash
+go version            # go1.27.3
+godot --version       # 4.7 (Web export templates installed)
+openspec --version    # 1.16.0
+```
 
 ## Run
 
@@ -143,14 +161,14 @@ World and gameplay constants are compiled in:
 
 Messages are JSON text frames with a numeric type and payload:
 `{"type": <number>, "data": ...}`. On the server these numbers form the
-`room.MessageType` enum (`internal/game/room/protocol.go`); the Godot client
+`event.MessageType` enum (`internal/game/event/protocol.go`); the Godot client
 mirrors them in `client/scripts/protocol.gd`.
 
 | Direction | Type | Payload |
 | --- | --- | --- |
 | Client → server | `200` | `{key: <direction>, state: bool}` where direction is `UP`, `DOWN`, `LEFT`, or `RIGHT` |
 | Server → client | `4` | Join success: `{playerId, roomId, width, height, radius, color, tickRate}` |
-| Server → client | `100` | Update: `{players:[{id, position:{x,y}, radius, color}], width, height, tick}` |
+| Server → client | `100` | Update: `{players:[{id, position:{x,y}, radius, color}], width, height}` |
 | Server → one client | `110` | Private event produced by `GameRoom.SendTo` |
 
 `playerId` from JOIN_SUCCESS identifies the client's circle inside the `players`
@@ -184,26 +202,28 @@ is the same shared `UPDATE` for every player.
 Extension types use `PublishTo`:
 
 ```go
-err := gr.PublishTo(playerID, player.CustomType, myMessageType, payload)
+err := gr.PublishTo(playerID, entity.CustomType, myMessageType, payload)
 ```
 
 Add a `SnapshotType` constant before `TypeCount` in
-[snapshot.go](internal/game/player/snapshot.go) and use it through `PublishTo`;
+[snapshot.go](internal/game/entity/snapshot.go) and use it through `PublishTo`;
 the outbox and writer pick it up in numeric order.
 
 `SendTo` returns `room.ErrPlayerNotFound` for missing/stopped players and
 `room.ErrRoomClosed` while closing. A nil return means staged for the writer,
 not delivered; a stop racing with `SendTo` drops the frame. It does not need to
-run on the actor goroutine — actor code can call `player.Publish` directly.
+run on the actor goroutine — actor code can call `p.Publish` directly.
 
 Private frames use type `110` and are normal top-level events. The Godot client
 does not handle `PRIVATE` yet; the message dispatch in
 `client/scripts/network.gd` is the extension point.
 
-Close codes: `1014` for an invalid room ID, unknown/full/closed room, or duplicate
-player; `1001` for room expiry; `1009` for messages over 32 KiB. Server shutdown
-may produce `1006` because the server context is canceled before room close
-handshakes.
+Close codes: `1014` for an invalid room ID, unknown room, or already-closed room;
+`1001` for room expiry or a server-initiated room close; `1009` for messages over
+32 KiB. A join rejected by the room's own admission checks (full room or
+duplicate player) currently receives neither join data nor a close frame — the
+specs record this gap explicitly. Server shutdown may produce `1006` because the
+server context is canceled before room close handshakes.
 
 ## Project layout
 
@@ -212,7 +232,9 @@ main.go                         server bootstrap and shutdown
 internal/config/config.go       .env loading and validation
 internal/server/game_server.go  routes, room registry, admission
 internal/game/room/             room actor, membership, spawns, snapshots, writer, commands
-internal/game/player/           player state, snapshot types, latest-per-type outbox
+internal/game/player/           player state, movement, spawn, input bitmask
+internal/game/entity/           shared entity state, snapshot types, latest-per-type outbox
+internal/game/event/            message numbers, payload shapes, JSON envelope
 internal/spatial/               world-bounded quadtree + circle/AABB collision detection
 internal/shared/                generic heap, concurrent set + reusable-timer scheduler
 client/project.godot            Godot 4.7 project settings and Network autoload
@@ -235,21 +257,27 @@ main_test.go                    integration and leak tests
 
 ## AI-assisted development with OpenSpec
 
-The project uses [OpenSpec](https://github.com/Fission-AI/OpenSpec) for
+The project uses [OpenSpec](https://openspec.dev/) (CLI `1.16.0`) for
 spec-driven development. The behavioral contract is a set of validated
 capabilities under [`openspec/specs/`](openspec/specs/), not a free-form document.
+The current set passes `openspec validate --specs --strict`: eleven capabilities,
+83 requirements, and 201 scenarios. The specs describe current behavior; known
+gaps (full or duplicate joins receiving no close frame, and UPDATE carrying no
+`tick`) are recorded as scenarios rather than quietly omitted.
 
-The baseline change ([`2026-10-31-baseline-specs`](openspec/changes/archive/2026-10-31-baseline-specs/proposal.md)) defines seven capabilities:
-
-| Capability | Covers |
-| --- | --- |
-| [`room-lifecycle`](openspec/specs/room-lifecycle/spec.md) | creation, admission, spawn slots, join, disconnect, timeout, close, shutdown |
-| [`room-gameplay`](openspec/specs/room-gameplay/spec.md) | world bounds, input state, movement, tick cadence, one-sided collision correction |
-| [`room-messaging`](openspec/specs/room-messaging/spec.md) | outbox channels, coalescing, broadcast UPDATE, private messages, extension |
-| [`wire-protocol`](openspec/specs/wire-protocol/spec.md) | HTTP/WS endpoints, envelope, message numbers, handshake limits, close codes |
-| [`server-configuration`](openspec/specs/server-configuration/spec.md) | `.env`, validation, endpoint wiring, compiled constants |
-| [`shared-scheduler`](openspec/specs/shared-scheduler/spec.md) | timer API, callbacks, shutdown, room timeout integration |
-| [`shared-heap`](openspec/specs/shared-heap/spec.md) | generic heap contract used by the scheduler |
+| Capability | Covers | Requirements |
+| --- | --- | --- |
+| [`room-lifecycle`](openspec/specs/room-lifecycle/spec.md) | creation, registration, admission, spawn slots, join, rejected joins, disconnect, timeout, close, shutdown | 10 |
+| [`room-gameplay`](openspec/specs/room-gameplay/spec.md) | world bounds, input state, movement, tick cadence, collision ordering, one-sided correction, determinism | 8 |
+| [`room-messaging`](openspec/specs/room-messaging/spec.md) | outbox channels, coalescing, broadcast UPDATE, writer, private messages, error semantics, extension | 7 |
+| [`wire-protocol`](openspec/specs/wire-protocol/spec.md) | routing, asset delivery, room creation, envelope, message numbers, payload shapes, handshake limits, identity, close codes | 12 |
+| [`server-configuration`](openspec/specs/server-configuration/spec.md) | `.env`, required variables, validation, endpoint wiring, compiled constants | 5 |
+| [`spatial-index`](openspec/specs/spatial-index/spec.md) | world-bounded quadtree, insertion, bulk replacement, shape/radius/nearest queries, room integration | 8 |
+| [`spatial-collision`](openspec/specs/spatial-collision/spec.md) | geometry, penetration, exact contact detection, ordering, read-only reporting | 6 |
+| [`shared-scheduler`](openspec/specs/shared-scheduler/spec.md) | timer API, callbacks, shutdown, room timeout integration | 7 |
+| [`shared-heap`](openspec/specs/shared-heap/spec.md) | generic heap contract used by the scheduler | 4 |
+| [`shared-set`](openspec/specs/shared-set/spec.md) | concurrent keyed set used for room membership | 8 |
+| [`godot-client`](openspec/specs/godot-client/spec.md) | project/export, browser bridge, lobby, session, rendering, input, statistics, layout | 8 |
 
 ### Workflow
 
