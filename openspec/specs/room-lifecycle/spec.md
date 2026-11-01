@@ -118,7 +118,7 @@ data.
 
 ### Requirement: Disconnect cleanup
 
-A leave command SHALL remove the player from membership and stop its context. Stopped players
+A leave command SHALL remove the player from membership and stop its session. Stopped sessions
 SHALL also be reaped at the start of each tick, and a reaped player SHALL receive no further
 broadcast snapshot. Removed players SHALL NOT be included in later snapshots.
 
@@ -129,7 +129,7 @@ broadcast snapshot. Removed players SHALL NOT be included in later snapshots.
 
 #### Scenario: Stopped players are reaped
 
-- **WHEN** a player's context is stopped without a leave command
+- **WHEN** a player's session stops without a leave command
 - **THEN** the next tick removes it from membership before movement and snapshots
 
 ### Requirement: Scheduler-driven room timeout

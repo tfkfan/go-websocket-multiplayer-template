@@ -62,14 +62,21 @@ body and no `Allow` header.
 
 ### Requirement: Room selection
 
-The room SHALL be selected by the `room` query parameter of the WebSocket URL, which SHALL parse
-as a UUID. No client JOIN message SHALL be required, and a client message of type 2 SHALL be
-ignored like any other unhandled type.
+The WebSocket URL SHALL select its mode with the `room` query parameter. A valid UUID SHALL join
+that existing room after its join command; an absent parameter SHALL enter matchmaking and receive
+join data only once placed in a newly formed room; a present parameter that is not a UUID SHALL end
+the upgrade with close status 1014 after the socket is accepted. No client JOIN message SHALL be
+required, and a client message of type 2 SHALL be ignored like any other unhandled type.
 
 #### Scenario: Connection joins through the query parameter
 
 - **WHEN** a client opens the WebSocket endpoint with a valid `room` parameter
 - **THEN** the connection is admitted to that room when its join command is applied
+
+#### Scenario: Connection without a room enters matchmaking
+
+- **WHEN** a client opens the WebSocket endpoint without a `room` parameter
+- **THEN** the connection is queued and receives join data only after a match places it
 
 #### Scenario: JOIN message is not needed
 
@@ -78,7 +85,7 @@ ignored like any other unhandled type.
 
 #### Scenario: Invalid room parameter
 
-- **WHEN** the `room` parameter is missing or not a UUID
+- **WHEN** the `room` parameter is present but not a UUID
 - **THEN** the upgrade attempt ends with close status 1014 after the socket is accepted
 
 ### Requirement: JSON envelope
@@ -146,14 +153,14 @@ Type 200 SHALL only travel from client to server.
 
 ### Requirement: UPDATE player list
 
-The UPDATE `players` array SHALL contain every current member exactly once, each with `id`,
+The UPDATE `players` array SHALL contain every current player exactly once, each with `id`,
 `position` (`x`, `y`), `radius`, and `color`. The array order SHALL be unspecified, and clients
 SHALL identify players by `id` rather than by position in the array.
 
-#### Scenario: Every member appears once
+#### Scenario: Every player appears once
 
 - **WHEN** a tick snapshot is published
-- **THEN** the player list has one entry per current member with no duplicates
+- **THEN** the player list has one entry per current player with no duplicates
 
 #### Scenario: Membership changes are reflected
 

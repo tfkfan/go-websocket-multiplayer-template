@@ -47,11 +47,17 @@ func create_room() -> void:
 		_creating_room = false
 		room_create_failed.emit("request could not be sent")
 
+func connect_queue() -> void:
+	_connect("")
+
 func connect_room(room_id: String) -> void:
+	_connect("?room=" + room_id.uri_encode())
+
+func _connect(query: String) -> void:
 	close_connection()
 	_socket = WebSocketPeer.new()
 	_opened_emitted = false
-	var url := Platform.websocket_origin() + Protocol.WEB_SOCKET_ENDPOINT + "?room=" + room_id.uri_encode()
+	var url := Platform.websocket_origin() + Protocol.WEB_SOCKET_ENDPOINT + query
 	var error := _socket.connect_to_url(url)
 	if error != OK:
 		_socket = null

@@ -12,6 +12,7 @@ import (
 	"github.com/tfkfan/gogame/internal/config"
 	"github.com/tfkfan/gogame/internal/core/entity"
 	coreroom "github.com/tfkfan/gogame/internal/core/room"
+	"github.com/tfkfan/gogame/internal/core/session"
 	"github.com/tfkfan/gogame/internal/core/snapshot"
 	"github.com/tfkfan/gogame/internal/game/player"
 )
@@ -32,6 +33,7 @@ type fakeSession struct {
 	closeReason  string
 	wroteMessage chan struct{}
 	gate         chan struct{}
+	once         sync.Once
 }
 
 func newFakeSession() *fakeSession {
@@ -72,6 +74,12 @@ func (s *fakeSession) Write(_ context.Context, msg []byte) error {
 	default:
 	}
 	return nil
+}
+
+func (s *fakeSession) StartWriter(ctx context.Context) {
+	s.once.Do(func() {
+		go session.RunWriter(ctx, s)
+	})
 }
 
 func (s *fakeSession) Stop() {

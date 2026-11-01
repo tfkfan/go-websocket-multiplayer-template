@@ -85,7 +85,7 @@ cannot teleport players.
 
 ### Requirement: Collision pass ordering
 
-Each tick SHALL run in a fixed order: reap stopped players, move every member in player-key
+Each tick SHALL run in a fixed order: reap stopped players, move every member in stable key
 order, rebuild the spatial index from the moved positions, detect contacts from that index,
 apply at most one correction per contact, and publish the snapshot. Corrections SHALL NOT be
 written into the index during the pass; they enter it on the next tick's rebuild.
@@ -151,7 +151,7 @@ insertion order.
 ### Requirement: Snapshot after correction
 
 The UPDATE published for a tick SHALL contain the positions after movement and collision
-correction for every current member.
+correction for every contributing player.
 
 #### Scenario: Correction is visible in the same tick
 

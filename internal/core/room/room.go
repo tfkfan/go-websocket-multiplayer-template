@@ -12,8 +12,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/tfkfan/gogame/internal/core/entity"
 	"github.com/tfkfan/gogame/internal/core/session"
+	"github.com/tfkfan/gogame/internal/core/shared"
 	"github.com/tfkfan/gogame/internal/core/snapshot"
-	"github.com/tfkfan/gogame/internal/shared"
 )
 
 var (
@@ -22,6 +22,7 @@ var (
 	ErrNotFound      = errors.New("member not found")
 	ErrNoSession     = errors.New("member has no session")
 	ErrInvalidMember = errors.New("member has no entity")
+	ErrRoomStarted   = errors.New("room already started")
 )
 
 type Member struct {
@@ -48,6 +49,7 @@ type Room struct {
 	hooks Hooks
 
 	closed    atomic.Bool
+	started   atomic.Bool
 	ctx       context.Context
 	ctxCancel context.CancelFunc
 
@@ -128,7 +130,50 @@ func (r *Room) Join(member Member) error {
 		return err
 	}
 	if member.Session != nil {
-		go session.RunWriter(r.ctx, member.Session)
+		member.Session.StartWriter(r.ctx)
+	}
+	return nil
+}
+
+func (r *Room) JoinAll(members []Member) error {
+	if r.Closed() {
+		return ErrClosed
+	}
+	if r.started.Load() {
+		return ErrRoomStarted
+	}
+
+	added := make([]Member, 0, len(members))
+	rollback := func() {
+		for _, member := range added {
+			if _, ok := r.members.Remove(member.Entity.Key()); ok {
+				r.hooks.OnLeave(member)
+			}
+		}
+	}
+
+	for _, member := range members {
+		if member.Entity == nil {
+			rollback()
+			return ErrInvalidMember
+		}
+		if member.Session != nil {
+			select {
+			case <-member.Session.Done():
+				rollback()
+				return ErrNotFound
+			default:
+			}
+		}
+		if !r.members.Add(member.Entity.Key(), member) {
+			rollback()
+			return ErrExists
+		}
+		added = append(added, member)
+		if err := r.hooks.OnJoin(member); err != nil {
+			rollback()
+			return err
+		}
 	}
 	return nil
 }
@@ -188,6 +233,13 @@ func (r *Room) Shutdown() error {
 }
 
 func (r *Room) Run(ctx context.Context, onClose func(*Room)) {
+	r.started.Store(true)
+	for _, member := range r.members.List() {
+		if member.Session != nil {
+			member.Session.StartWriter(r.ctx)
+		}
+	}
+
 	timeout := make(chan struct{}, 1)
 	r.scheduler.Schedule(r.timeout, func() {
 		timeout <- struct{}{}

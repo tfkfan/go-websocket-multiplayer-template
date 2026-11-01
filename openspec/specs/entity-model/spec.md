@@ -92,9 +92,9 @@ selected per kind rather than by the room asserting concrete types.
 
 ### Requirement: Game-rule-free reusable layer
 
-The layer that provides membership, snapshot staging, outbox, writer, ticker, timeout, and close
-ordering SHALL NOT depend on the player, game-room, or game-event packages, or on their rules. A
-dependency check SHALL fail when that boundary is crossed.
+The layer that provides membership, snapshot staging, outbox, writer, ticker, timeout, close
+ordering, room storage, and matchmaking SHALL NOT depend on the player, game-room, or game-event
+packages, or on their rules. A dependency check SHALL fail when that boundary is crossed.
 
 #### Scenario: Boundary is enforced
 
@@ -103,7 +103,7 @@ dependency check SHALL fail when that boundary is crossed.
 
 #### Scenario: Reusable layer is exercised without game code
 
-- **WHEN** the reusable room and session tests run
+- **WHEN** the reusable primitive, room, session, and matchmaker tests run
 - **THEN** they use only test doubles and no game-rule package
 
 ### Requirement: Preserved connection behavior

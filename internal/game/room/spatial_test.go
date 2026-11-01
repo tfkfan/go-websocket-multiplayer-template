@@ -9,8 +9,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/tfkfan/gogame/internal/config"
 	coreroom "github.com/tfkfan/gogame/internal/core/room"
+	"github.com/tfkfan/gogame/internal/core/spatial"
 	"github.com/tfkfan/gogame/internal/game/player"
-	"github.com/tfkfan/gogame/internal/spatial"
 )
 
 func newSpatialTestRoom(t *testing.T, capacity int) *GameRoom {

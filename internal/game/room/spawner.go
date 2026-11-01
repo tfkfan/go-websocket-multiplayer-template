@@ -4,7 +4,7 @@ import (
 	"math"
 
 	"github.com/tfkfan/gogame/internal/config"
-	"github.com/tfkfan/gogame/internal/spatial"
+	"github.com/tfkfan/gogame/internal/core/spatial"
 )
 
 type Spawner struct {

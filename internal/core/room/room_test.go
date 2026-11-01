@@ -12,8 +12,9 @@ import (
 	"github.com/coder/websocket"
 	"github.com/google/uuid"
 	"github.com/tfkfan/gogame/internal/core/entity"
+	"github.com/tfkfan/gogame/internal/core/session"
 	"github.com/tfkfan/gogame/internal/core/snapshot"
-	"github.com/tfkfan/gogame/internal/spatial"
+	"github.com/tfkfan/gogame/internal/core/spatial"
 )
 
 type testEntity struct {
@@ -52,6 +53,7 @@ type testSession struct {
 	written     [][]byte
 	closeCode   websocket.StatusCode
 	closeReason string
+	once        sync.Once
 }
 
 func newTestSession() *testSession {
@@ -84,6 +86,12 @@ func (s *testSession) Write(_ context.Context, msg []byte) error {
 	defer s.mu.Unlock()
 	s.written = append(s.written, append([]byte(nil), msg...))
 	return nil
+}
+
+func (s *testSession) StartWriter(ctx context.Context) {
+	s.once.Do(func() {
+		go session.RunWriter(ctx, s)
+	})
 }
 
 func (s *testSession) Stop() {
@@ -440,4 +448,88 @@ func TestMembershipIsOrderIndependent(t *testing.T) {
 	if first, second := build(false), build(true); first != second {
 		t.Fatalf("membership differs by admission order: %s and %s", first, second)
 	}
+}
+
+func TestJoinAllAdmitsBatchBeforeRun(t *testing.T) {
+	room, hooks := newTestRoom(t, time.Minute)
+
+	first := newTestEntity(uuid.New(), spatial.Vec2{}, 25)
+	second := newTestEntity(uuid.New(), spatial.Vec2{}, 25)
+	firstSession := newTestSession()
+	secondSession := newTestSession()
+
+	if err := room.JoinAll([]Member{
+		{Entity: first, Session: firstSession},
+		{Entity: second, Session: secondSession},
+	}); err != nil {
+		t.Fatalf("batch join failed: %v", err)
+	}
+
+	if room.Len() != 2 {
+		t.Fatalf("membership = %d, want 2", room.Len())
+	}
+	joined, left := hooks.counts()
+	if joined != 2 || left != 0 {
+		t.Fatalf("hooks joined=%d left=%d, want 2 and 0", joined, left)
+	}
+
+	runCtx, runCancel := context.WithCancel(context.Background())
+	defer runCancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		room.Run(runCtx, func(*Room) {})
+	}()
+	defer func() {
+		runCancel()
+		<-done
+	}()
+	waitFor(t, func() bool { return room.started.Load() })
+}
+
+func TestJoinAllRollsBackOnFailure(t *testing.T) {
+	room, hooks := newTestRoom(t, time.Minute)
+
+	first := newTestEntity(uuid.New(), spatial.Vec2{}, 25)
+	dead := newTestEntity(uuid.New(), spatial.Vec2{}, 25)
+	deadSession := newTestSession()
+	deadSession.Stop()
+
+	err := room.JoinAll([]Member{
+		{Entity: first, Session: newTestSession()},
+		{Entity: dead, Session: deadSession},
+	})
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("batch join error = %v, want ErrNotFound", err)
+	}
+	if room.Len() != 0 {
+		t.Fatalf("membership after rollback = %d, want 0", room.Len())
+	}
+	if _, ok := room.Member(first.Key()); ok {
+		t.Fatal("first member survived the rollback")
+	}
+	joined, left := hooks.counts()
+	if joined != 1 || left != 1 {
+		t.Fatalf("hooks joined=%d left=%d, want 1 and 1", joined, left)
+	}
+}
+
+func TestJoinAllRejectsStartedRoom(t *testing.T) {
+	room, _ := newTestRoom(t, time.Minute)
+
+	runCtx, runCancel := context.WithCancel(context.Background())
+	defer runCancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		room.Run(runCtx, func(*Room) {})
+	}()
+	defer func() {
+		runCancel()
+		<-done
+	}()
+
+	waitFor(t, func() bool {
+		return errors.Is(room.JoinAll(nil), ErrRoomStarted)
+	})
 }

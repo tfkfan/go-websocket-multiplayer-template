@@ -13,9 +13,9 @@ import (
 	"github.com/tfkfan/gogame/internal/core/entity"
 	coreroom "github.com/tfkfan/gogame/internal/core/room"
 	"github.com/tfkfan/gogame/internal/core/snapshot"
+	"github.com/tfkfan/gogame/internal/core/spatial"
 	"github.com/tfkfan/gogame/internal/game/event"
 	"github.com/tfkfan/gogame/internal/game/player"
-	"github.com/tfkfan/gogame/internal/spatial"
 )
 
 var (
@@ -239,4 +239,14 @@ func (gr *GameRoom) publishSnapshot() {
 	}
 
 	gr.Broadcast(snapshot.BroadcastType, msg)
+}
+
+func (gr *GameRoom) RoomID() uuid.UUID {
+	return gr.Id
+}
+
+func (gr *GameRoom) RunRoom(ctx context.Context, onClose func()) {
+	gr.Run(ctx, func(*coreroom.Room) {
+		onClose()
+	})
 }

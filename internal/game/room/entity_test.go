@@ -11,9 +11,9 @@ import (
 	"github.com/tfkfan/gogame/internal/config"
 	"github.com/tfkfan/gogame/internal/core/entity"
 	"github.com/tfkfan/gogame/internal/core/snapshot"
+	"github.com/tfkfan/gogame/internal/core/spatial"
 	"github.com/tfkfan/gogame/internal/game/event"
 	"github.com/tfkfan/gogame/internal/game/player"
-	"github.com/tfkfan/gogame/internal/spatial"
 )
 
 type testObject struct {

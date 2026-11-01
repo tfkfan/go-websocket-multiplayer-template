@@ -10,6 +10,8 @@ import (
 	"testing"
 )
 
+const coreModuleRoot = "github.com/tfkfan/gogame"
+
 var forbiddenCoreImports = []string{
 	"github.com/tfkfan/gogame/internal/game",
 	"github.com/tfkfan/gogame/internal/server",
@@ -46,6 +48,9 @@ func TestCoreDoesNotDependOnGamePackages(t *testing.T) {
 				if importPath == forbidden || strings.HasPrefix(importPath, forbidden+"/") {
 					t.Errorf("%s imports forbidden package %s", path, importPath)
 				}
+			}
+			if importPath == coreModuleRoot {
+				t.Errorf("%s imports the process entry point", path)
 			}
 		}
 		return nil

@@ -22,6 +22,7 @@ type fakeSession struct {
 	closeCode    websocket.StatusCode
 	closeReason  string
 	wroteMessage chan struct{}
+	once         sync.Once
 }
 
 func newFakeSession() *fakeSession {
@@ -62,6 +63,12 @@ func (s *fakeSession) Write(_ context.Context, msg []byte) error {
 	default:
 	}
 	return nil
+}
+
+func (s *fakeSession) StartWriter(ctx context.Context) {
+	s.once.Do(func() {
+		go RunWriter(ctx, s)
+	})
 }
 
 func (s *fakeSession) Stop() {

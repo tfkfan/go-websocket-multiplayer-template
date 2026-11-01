@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/tfkfan/gogame/internal/config"
-	"github.com/tfkfan/gogame/internal/server"
+	"github.com/tfkfan/gogame/internal/game/server"
 )
 
 func main() {

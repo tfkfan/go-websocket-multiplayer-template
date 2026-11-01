@@ -141,7 +141,7 @@ func _draw_self_label(center: Vector2, radius: float, factor: float) -> void:
 	draw_string(font, label_position, "you", HORIZONTAL_ALIGNMENT_CENTER, label_width, font_size, SELF_OUTLINE_COLOR)
 
 func _draw_empty_state(factor: float) -> void:
-	var message := "Waiting for game state…" if room_active else "Create or open a room to play"
+	var message := "Waiting for game state…" if room_active else "Create a room, open a link, or press Play"
 	var font := ThemeDB.fallback_font
 	var font_size := maxi(12, int(22.0 * clampf(factor, 0.5, 2.0)))
 	draw_string(font, Vector2(0.0, size.y * 0.5), message, HORIZONTAL_ALIGNMENT_CENTER, size.x, font_size, MUTED_TEXT_COLOR)

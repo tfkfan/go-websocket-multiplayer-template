@@ -16,7 +16,11 @@ func TestAssetHandlerServesExport(t *testing.T) {
 	writeAsset(t, root, "index.wasm", "\x00asm")
 	writeAsset(t, root, "index.pck", "GDPC")
 
-	server := httptest.NewServer(assetHandler(root))
+	contentTypes := map[string]string{
+		".wasm": "application/wasm",
+		".pck":  "application/octet-stream",
+	}
+	server := httptest.NewServer(assetHandler(root, contentTypes))
 	defer server.Close()
 
 	tests := []struct {

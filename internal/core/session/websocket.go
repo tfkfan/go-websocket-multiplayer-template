@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"sync"
 
 	"github.com/coder/websocket"
 	"github.com/tfkfan/gogame/internal/core/snapshot"
@@ -12,6 +13,7 @@ type WebSocket struct {
 	outbox *snapshot.Outbox
 	ctx    context.Context
 	cancel context.CancelFunc
+	once   sync.Once
 }
 
 func NewWebSocket(parent context.Context, conn *websocket.Conn) *WebSocket {
@@ -50,6 +52,12 @@ func (s *WebSocket) Read(ctx context.Context) ([]byte, error) {
 		return nil, err
 	}
 	return msg, nil
+}
+
+func (s *WebSocket) StartWriter(ctx context.Context) {
+	s.once.Do(func() {
+		go RunWriter(ctx, s)
+	})
 }
 
 func (s *WebSocket) Stop() {

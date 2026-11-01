@@ -17,6 +17,7 @@ type Session interface {
 	NextOutbound() []byte
 	Signal() <-chan struct{}
 	Write(ctx context.Context, msg []byte) error
+	StartWriter(ctx context.Context)
 	Stop()
 	Close(code websocket.StatusCode, reason string)
 }

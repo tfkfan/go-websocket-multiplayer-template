@@ -55,8 +55,9 @@ when available.
 ### Requirement: Lobby actions
 
 The lobby SHALL create rooms with `POST ROOM_ENDPOINT` under a 10 second timeout and SHALL report
-transport failures, non-200 responses, and empty bodies. Leaving a room SHALL close the socket
-with a normal closure and reset the lobby.
+transport failures, non-200 responses, and empty bodies. It SHALL offer a queue action that opens
+the WebSocket without a room parameter and SHALL show a waiting status until join data arrives.
+Leaving a session SHALL close the socket with a normal closure and reset the lobby.
 
 #### Scenario: Create room succeeds
 
@@ -68,9 +69,19 @@ with a normal closure and reset the lobby.
 - **WHEN** the request fails, returns a non-200 status, or returns an empty body
 - **THEN** the create button re-enables and the status line shows the failure
 
+#### Scenario: Queue action starts matchmaking
+
+- **WHEN** the play button is pressed
+- **THEN** the client opens the socket without a room parameter and shows a waiting status
+
+#### Scenario: Waiting resolves into a room
+
+- **WHEN** join data arrives after queueing
+- **THEN** the client shows the matched room and enters the game state
+
 #### Scenario: Leave closes the session
 
-- **WHEN** the leave button is pressed
+- **WHEN** the leave button is pressed before or after a match
 - **THEN** the socket closes with code 1000 and the lobby is restored
 
 ### Requirement: Room session

@@ -42,7 +42,6 @@ layout_mode = 1
 
 [node name="Panel" type="PanelContainer" parent="Layout" unique_id=1224992565]
 unique_name_in_owner = true
-visible = false
 custom_minimum_size = Vector2(320, 0)
 layout_mode = 0
 
@@ -70,13 +69,18 @@ text = "Circles"
 [node name="Subtitle" type="Label" parent="Layout/Panel/PanelMargin/PanelScroll/Body" unique_id=941093048]
 unique_name_in_owner = true
 layout_mode = 2
-text = "Room-based canvas multiplayer"
+text = "Room links and instant matchmaking"
 autowrap_mode = 3
 
 [node name="CreateButton" type="Button" parent="Layout/Panel/PanelMargin/PanelScroll/Body" unique_id=1475212022]
 unique_name_in_owner = true
 layout_mode = 2
 text = "Create room"
+
+[node name="PlayButton" type="Button" parent="Layout/Panel/PanelMargin/PanelScroll/Body" unique_id=1475212023]
+unique_name_in_owner = true
+layout_mode = 2
+text = "Play"
 
 [node name="RoomRow" type="HBoxContainer" parent="Layout/Panel/PanelMargin/PanelScroll/Body" unique_id=764184420]
 unique_name_in_owner = true
@@ -114,7 +118,7 @@ text = "Leave"
 unique_name_in_owner = true
 custom_minimum_size = Vector2(0, 42)
 layout_mode = 2
-text = "Create a room to start."
+text = "Create a room or press Play."
 autowrap_mode = 3
 
 [node name="StateHeader" type="Label" parent="Layout/Panel/PanelMargin/PanelScroll/Body" unique_id=723503384]

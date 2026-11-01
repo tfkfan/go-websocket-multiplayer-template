@@ -6,7 +6,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/tfkfan/gogame/internal/core/entity"
-	"github.com/tfkfan/gogame/internal/spatial"
+	"github.com/tfkfan/gogame/internal/core/spatial"
 )
 
 func TestProfilesMoveIndependently(t *testing.T) {
