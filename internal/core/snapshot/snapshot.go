@@ -1,4 +1,4 @@
-package entity
+package snapshot
 
 type SnapshotType uint8
 

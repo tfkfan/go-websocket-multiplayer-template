@@ -28,26 +28,31 @@ behavioral contract is maintained as OpenSpec capability specs in
 
 ## Architecture
 
-- One **room actor** (`GameRoom.Run`) owns membership, spawn slots, and all
-  player positions. Joins and leaves are commands to that actor.
+- One **room actor** (`core/room.Room.Run`) owns membership, the command queue,
+  the ticker, the timeout, delivery, and close ordering. The game hook on top of
+  it owns simulation, spawn slots, and all player positions.
+- A **member** pairs an entity with an optional session. A player is the current
+  entity kind and the only kind that contributes to UPDATE; an entity without a
+  session is still simulated, indexed, and collided, but cannot be addressed.
 - Each connection has exactly **one reader** (the HTTP handler) and **one
   writer** goroutine. There is no per-player inbound consumer.
 - Movement keys are an atomic bitmask updated by the reader; the room tick reads
   the latest state. No key-event queue.
-- Each tick moves every player in stable key order, refreshes the room quadtree
-  once, and lets a room callback relocate exactly one body per contact (the only
-  mover, or the later mover when both moved). The corrected positions are
-  published immediately; the index catches up on the next tick's refresh. The
-  spatial package never moves a body, and another player is never repositioned by
-  a collision. The index also answers shape, radius, and nearest-point queries for
+- Each tick moves every member in stable key order, refreshes the room quadtree
+  once, and lets the room relocate exactly one body per contact (the only mover,
+  or the later mover when both moved). The corrected positions are published
+  immediately; the index catches up on the next tick's refresh. The spatial
+  package never moves a body, and another player is never repositioned by a
+  collision. The index also answers shape, radius, and nearest-point queries for
   actor-side gameplay; it is owned by the room actor, not shared across goroutines.
-- The outbound mailbox is a map from `SnapshotType` (`SystemType`,
-  `PrivateType`, `BroadcastType`, `CustomType`) to the latest payload of that
-  type. The writer sends one payload per type in numeric order.
-- `SendTo` / `PublishTo` stage bytes directly into the target player's outbox —
+- Each **session** owns an outbound mailbox: a map from `SnapshotType`
+  (`SystemType`, `PrivateType`, `BroadcastType`, `CustomType`) to the latest
+  payload of that type. The session's writer sends one payload per type in
+  numeric order.
+- `SendTo` / `PublishTo` stage bytes directly into the target session's outbox —
   no actor command or pending map. `publishSnapshot` serializes one UPDATE per
-  tick and stages it for every player as `BroadcastType`; each connection writer
-  only consumes its own outbox.
+  tick and stages it for every connected member as `BroadcastType`; each
+  connection writer only consumes its own outbox.
 
 ## Screenshots
 
@@ -202,17 +207,18 @@ is the same shared `UPDATE` for every player.
 Extension types use `PublishTo`:
 
 ```go
-err := gr.PublishTo(playerID, entity.CustomType, myMessageType, payload)
+err := gr.PublishTo(playerID, snapshot.CustomType, myMessageType, payload)
 ```
 
 Add a `SnapshotType` constant before `TypeCount` in
-[snapshot.go](internal/game/entity/snapshot.go) and use it through `PublishTo`;
+[snapshot.go](internal/core/snapshot/snapshot.go) and use it through `PublishTo`;
 the outbox and writer pick it up in numeric order.
 
 `SendTo` returns `room.ErrPlayerNotFound` for missing/stopped players and
 `room.ErrRoomClosed` while closing. A nil return means staged for the writer,
 not delivered; a stop racing with `SendTo` drops the frame. It does not need to
-run on the actor goroutine — actor code can call `p.Publish` directly.
+run on the actor goroutine — actor code can publish through the member's session
+directly.
 
 Private frames use type `110` and are normal top-level events. The Godot client
 does not handle `PRIVATE` yet; the message dispatch in
@@ -230,10 +236,13 @@ server context is canceled before room close handshakes.
 ```text
 main.go                         server bootstrap and shutdown
 internal/config/config.go       .env loading and validation
-internal/server/game_server.go  routes, room registry, admission
-internal/game/room/             room actor, membership, spawns, snapshots, writer, commands
-internal/game/player/           player state, movement, spawn, input bitmask
-internal/game/entity/           shared entity state, snapshot types, latest-per-type outbox
+internal/server/game_server.go  routes, room registry, admission, connection wiring
+internal/core/entity/           entity contract, base identity/position, world size
+internal/core/snapshot/         snapshot types and latest-per-type outbox
+internal/core/session/          per-connection outbox, writer, close behavior
+internal/core/room/             generic room: membership, commands, ticker, timeout, delivery
+internal/game/room/             game policy: admission, spawns, simulation, contacts, UPDATE
+internal/game/player/           player entity, controller, profile, movement
 internal/game/event/            message numbers, payload shapes, JSON envelope
 internal/spatial/               world-bounded quadtree + circle/AABB collision detection
 internal/shared/                generic heap, concurrent set + reusable-timer scheduler
@@ -260,8 +269,8 @@ main_test.go                    integration and leak tests
 The project uses [OpenSpec](https://openspec.dev/) (CLI `1.16.0`) for
 spec-driven development. The behavioral contract is a set of validated
 capabilities under [`openspec/specs/`](openspec/specs/), not a free-form document.
-The current set passes `openspec validate --specs --strict`: eleven capabilities,
-83 requirements, and 201 scenarios. The specs describe current behavior; known
+The current set passes `openspec validate --specs --strict`: twelve capabilities,
+90 requirements, and 215 scenarios. The specs describe current behavior; known
 gaps (full or duplicate joins receiving no close frame, and UPDATE carrying no
 `tick`) are recorded as scenarios rather than quietly omitted.
 
@@ -270,6 +279,7 @@ gaps (full or duplicate joins receiving no close frame, and UPDATE carrying no
 | [`room-lifecycle`](openspec/specs/room-lifecycle/spec.md) | creation, registration, admission, spawn slots, join, rejected joins, disconnect, timeout, close, shutdown | 10 |
 | [`room-gameplay`](openspec/specs/room-gameplay/spec.md) | world bounds, input state, movement, tick cadence, collision ordering, one-sided correction, determinism | 8 |
 | [`room-messaging`](openspec/specs/room-messaging/spec.md) | outbox channels, coalescing, broadcast UPDATE, writer, private messages, error semantics, extension | 7 |
+| [`entity-model`](openspec/specs/entity-model/spec.md) | heterogeneous membership, connection-less members, per-instance behavior, deterministic ticks, snapshot contribution, game-rule-free core | 7 |
 | [`wire-protocol`](openspec/specs/wire-protocol/spec.md) | routing, asset delivery, room creation, envelope, message numbers, payload shapes, handshake limits, identity, close codes | 12 |
 | [`server-configuration`](openspec/specs/server-configuration/spec.md) | `.env`, required variables, validation, endpoint wiring, compiled constants | 5 |
 | [`spatial-index`](openspec/specs/spatial-index/spec.md) | world-bounded quadtree, insertion, bulk replacement, shape/radius/nearest queries, room integration | 8 |

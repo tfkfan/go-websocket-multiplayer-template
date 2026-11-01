@@ -10,10 +10,10 @@ semantics for staged sends, and the extension channel for new snapshot types.
 
 ### Requirement: Typed outbox channels
 
-Each entity SHALL own an outbox holding at most one payload per snapshot type, with the numeric
-order `SystemType`, `PrivateType`, `BroadcastType`, `CustomType`, bounded by `TypeCount`.
-Publishing a type at or above `TypeCount` SHALL be dropped, and publishing after the entity
-context is done SHALL be dropped. A publish SHALL wake a single coalesced signal.
+Each outbound connection SHALL own an outbox holding at most one payload per snapshot type, with
+the numeric order `SystemType`, `PrivateType`, `BroadcastType`, `CustomType`, bounded by
+`TypeCount`. Publishing a type at or above `TypeCount` SHALL be dropped, and publishing after
+the connection context is done SHALL be dropped. A publish SHALL wake a single coalesced signal.
 
 #### Scenario: Writer drains channels in numeric order
 
@@ -43,13 +43,13 @@ rather than queue them.
 
 ### Requirement: Shared broadcast snapshot
 
-Each tick SHALL marshal one UPDATE and stage the same bytes for every current member on the
+Each tick SHALL marshal one UPDATE and stage the same bytes for every connected member on the
 broadcast channel. An empty room SHALL publish nothing.
 
 #### Scenario: All players receive the same snapshot
 
-- **WHEN** a tick snapshot is published to a room with several members
-- **THEN** every member's broadcast slot holds the same payload
+- **WHEN** a tick snapshot is published to a room with several connected members
+- **THEN** every connected member's broadcast slot holds the same payload
 
 #### Scenario: Empty room publishes nothing
 

@@ -26,7 +26,7 @@ func (s *Spawner) nextSlot() int {
 	}
 
 	minDist := config.PlayerRadius * 2.5
-	players := s.room.players.List()
+	players := s.room.players()
 	for i := range slots {
 		slot := (s.spawnCounter + i) % slots
 		pos := s.slotPosition(slot)

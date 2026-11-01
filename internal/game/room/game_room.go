@@ -2,17 +2,28 @@ package room
 
 import (
 	"context"
+	"errors"
 	"log"
 	"math"
 	"sort"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/tfkfan/gogame/internal/config"
-	"github.com/tfkfan/gogame/internal/game/entity"
+	"github.com/tfkfan/gogame/internal/core/entity"
+	coreroom "github.com/tfkfan/gogame/internal/core/room"
+	"github.com/tfkfan/gogame/internal/core/snapshot"
 	"github.com/tfkfan/gogame/internal/game/event"
 	"github.com/tfkfan/gogame/internal/game/player"
-	"github.com/tfkfan/gogame/internal/shared"
 	"github.com/tfkfan/gogame/internal/spatial"
+)
+
+var (
+	ErrRoomClosed     = coreroom.ErrClosed
+	ErrPlayerExists   = coreroom.ErrExists
+	ErrPlayerNotFound = coreroom.ErrNotFound
+	ErrNoSession      = coreroom.ErrNoSession
+	ErrRoomFull       = errors.New("game room is full")
 )
 
 var worldRect = spatial.Rect{
@@ -26,50 +37,50 @@ var palette = []string{
 }
 
 type GameRoom struct {
-	BaseRoom
+	*coreroom.Room
+
+	cfg     *config.Config
+	world   entity.World
+	spatial *spatial.Quadtree
 	spawner *Spawner
 }
 
-func NewGameRoom(gameRoomContext context.Context, gameRoomCancel context.CancelFunc, srvCfg *config.Config) *GameRoom {
-	r := &GameRoom{
-		Id:        uuid.New(),
-		cfg:       srvCfg,
-		commands:  make(chan Command, commandBuffer),
-		players:   shared.NewSet[uuid.UUID, *player.Player](),
-		spatial:   spatial.NewQuadtree(worldRect, spatial.Options{}),
-		ctx:       gameRoomContext,
-		ctxCancel: gameRoomCancel,
-		scheduler: shared.NewScheduler(),
-		world: entity.World{
-			Width:  config.WorldWidth,
-			Height: config.WorldHeight,
-		},
-	}
-	r.spawner = NewSpawner(r)
-	r.BaseRoom.IRoom = r
-	r.BaseRoom.CollisionHandler = r
-
-	log.Printf("created game room %s (capacity %d)", r.Id, r.cfg.RoomCapacity)
-	return r
+type contributor interface {
+	Contribute() (any, bool)
 }
 
-func (gr *GameRoom) OnJoin(p *player.Player) error {
-	if gr.closed.Load() || gr.ctx.Err() != nil {
-		return ErrRoomClosed
-	}
+type correctable interface {
+	spatial.Body
+	MoveTo(spatial.Vec2)
+	Extent() float64
+}
 
-	if _, exists := gr.players.Get(p.Id); exists {
-		return ErrPlayerExists
+func NewGameRoom(gameRoomContext context.Context, gameRoomCancel context.CancelFunc, srvCfg *config.Config) *GameRoom {
+	gr := &GameRoom{
+		cfg:     srvCfg,
+		world:   entity.World{Width: config.WorldWidth, Height: config.WorldHeight},
+		spatial: spatial.NewQuadtree(worldRect, spatial.Options{}),
 	}
-	if gr.players.Len() >= gr.cfg.RoomCapacity {
+	gr.Room = coreroom.New(gameRoomContext, gameRoomCancel, coreroom.Config{
+		Id:           uuid.New(),
+		Timeout:      srvCfg.RoomTimeout,
+		TickInterval: time.Second / time.Duration(config.TickRate),
+	}, gr)
+	gr.spawner = NewSpawner(gr)
+	return gr
+}
+
+func (gr *GameRoom) OnJoin(member coreroom.Member) error {
+	p, ok := member.Entity.(*player.Player)
+	if !ok {
+		return nil
+	}
+	if gr.playerCount() > gr.cfg.RoomCapacity {
 		return ErrRoomFull
 	}
 
 	slot := gr.spawner.nextSlot()
-	p.Spawn(gr.world, gr.spawner.slotPosition(slot), config.PlayerRadius, palette[slot%len(palette)])
-	if !gr.players.Add(p.Id, p) {
-		return ErrPlayerExists
-	}
+	p.Spawn(gr.world, gr.spawner.slotPosition(slot), palette[slot%len(palette)])
 
 	state := p.Snapshot()
 	msg, err := event.MarshalEvent(event.MsgJoinSuccess, event.JoinSuccessData{
@@ -82,58 +93,150 @@ func (gr *GameRoom) OnJoin(p *player.Player) error {
 		TickRate: config.TickRate,
 	})
 	if err != nil {
-		gr.players.Remove(p.Id)
 		return err
 	}
-
-	p.Publish(entity.SystemType, msg)
-	go gr.writeLoop(p)
-
+	if member.Session != nil {
+		member.Session.Publish(snapshot.SystemType, msg)
+	}
 	return nil
 }
 
-func (gr *GameRoom) OnDisconnect(p *player.Player) error {
-	gr.players.Remove(p.Id)
-	p.Stop()
-	return nil
+func (gr *GameRoom) OnLeave(coreroom.Member) {
 }
 
-func (gr *GameRoom) OnUpdate(dt float64) {
-	gr.reapStopped()
-	moved := gr.movePlayers(dt)
+func (gr *GameRoom) OnTick(dt float64) {
+	moved := gr.moveMembers(dt)
 	gr.refreshSpatial()
 	gr.handleCollisions(moved)
 	gr.publishSnapshot()
 }
 
-func (gr *GameRoom) movePlayers(dt float64) map[string]int {
-	players := gr.players.List()
-	sort.Slice(players, func(i, j int) bool {
-		return players[i].Key() < players[j].Key()
+func (gr *GameRoom) SendTo(playerID uuid.UUID, messageType event.MessageType, data any) error {
+	return gr.PublishTo(playerID, snapshot.PrivateType, messageType, data)
+}
+
+func (gr *GameRoom) PublishTo(playerID uuid.UUID, kind snapshot.SnapshotType, messageType event.MessageType, data any) error {
+	msg, err := event.MarshalEvent(messageType, data)
+	if err != nil {
+		return err
+	}
+	return gr.Room.PublishTo(playerID.String(), kind, msg)
+}
+
+func (gr *GameRoom) players() []*player.Player {
+	members := gr.Members()
+	players := make([]*player.Player, 0, len(members))
+	for _, member := range members {
+		if p, ok := member.Entity.(*player.Player); ok {
+			players = append(players, p)
+		}
+	}
+	return players
+}
+
+func (gr *GameRoom) playerCount() int {
+	return len(gr.players())
+}
+
+func (gr *GameRoom) moveMembers(dt float64) map[string]int {
+	members := gr.Members()
+	sort.Slice(members, func(i, j int) bool {
+		return members[i].Entity.Key() < members[j].Entity.Key()
 	})
 
-	moved := make(map[string]int, len(players))
-	for idx, p := range players {
-		before := p.Snapshot()
-		p.Update(dt)
-		current := p.Snapshot()
-		if current.Position != before.Position {
-			moved[p.Key()] = idx
+	moved := make(map[string]int, len(members))
+	for index, member := range members {
+		before := member.Entity.Shape().CenterPoint()
+		member.Entity.Update(dt)
+		after := member.Entity.Shape().CenterPoint()
+		if after != before {
+			moved[member.Entity.Key()] = index
 		}
 	}
 	return moved
 }
 
-func (gr *GameRoom) handleCollision(body spatial.Body, normal spatial.Vec2, depth float64) {
-	p, ok := body.(*player.Player)
+func (gr *GameRoom) refreshSpatial() {
+	members := gr.Members()
+	bodies := make([]spatial.Body, 0, len(members))
+	for _, member := range members {
+		bodies = append(bodies, member.Entity)
+	}
+	gr.spatial.Rebuild(bodies)
+}
+
+func (gr *GameRoom) handleCollisions(moved map[string]int) {
+	spatial.DetectCollisions(gr.spatial, func(contact spatial.Contact) {
+		aIndex, aMoved := moved[contact.A.Key()]
+		bIndex, bMoved := moved[contact.B.Key()]
+
+		switch {
+		case !aMoved && !bMoved:
+			return
+		case aMoved && bMoved && aIndex > bIndex:
+			gr.correct(contact.A, contact.Normal, contact.Depth)
+		case aMoved && bMoved:
+			gr.correct(contact.B, contact.Normal.Scale(-1), contact.Depth)
+		case aMoved:
+			gr.correct(contact.A, contact.Normal, contact.Depth)
+		default:
+			gr.correct(contact.B, contact.Normal.Scale(-1), contact.Depth)
+		}
+	})
+}
+
+func (gr *GameRoom) correct(body spatial.Body, normal spatial.Vec2, depth float64) {
+	mover, ok := body.(correctable)
 	if !ok {
 		return
 	}
 
-	center := p.Shape().CenterPoint()
+	center := mover.Shape().CenterPoint()
 	target := center.Add(normal.Scale(depth))
-	radius := p.Snapshot().Radius
-	target.X = math.Min(math.Max(target.X, radius), gr.world.Width-radius)
-	target.Y = math.Min(math.Max(target.Y, radius), gr.world.Height-radius)
-	p.MoveTo(spatial.Vec2{X: target.X, Y: target.Y})
+	extent := mover.Extent()
+	target.X = math.Min(math.Max(target.X, extent), gr.world.Width-extent)
+	target.Y = math.Min(math.Max(target.Y, extent), gr.world.Height-extent)
+	mover.MoveTo(spatial.Vec2{X: target.X, Y: target.Y})
+}
+
+func (gr *GameRoom) publishSnapshot() {
+	members := gr.Members()
+	if len(members) == 0 {
+		return
+	}
+	sort.Slice(members, func(i, j int) bool {
+		return members[i].Entity.Key() < members[j].Entity.Key()
+	})
+
+	states := make([]player.State, 0, len(members))
+	for _, member := range members {
+		source, ok := member.Entity.(contributor)
+		if !ok {
+			continue
+		}
+		value, ok := source.Contribute()
+		if !ok {
+			continue
+		}
+		state, ok := value.(player.State)
+		if !ok {
+			continue
+		}
+		states = append(states, state)
+	}
+	if len(states) == 0 {
+		return
+	}
+
+	msg, err := event.MarshalEvent(event.MsgUpdate, event.UpdateData{
+		Players: states,
+		Width:   gr.world.Width,
+		Height:  gr.world.Height,
+	})
+	if err != nil {
+		log.Printf("failed to marshal room update for %s: %v", gr.Id, err)
+		return
+	}
+
+	gr.Broadcast(snapshot.BroadcastType, msg)
 }

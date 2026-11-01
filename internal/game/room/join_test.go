@@ -8,73 +8,70 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/tfkfan/gogame/internal/config"
+	coreroom "github.com/tfkfan/gogame/internal/core/room"
 	"github.com/tfkfan/gogame/internal/game/player"
-	"github.com/tfkfan/gogame/internal/shared"
 )
 
 func TestJoinAdmission(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	gr := NewGameRoom(ctx, cancel, &config.Config{
+	room := newTestRoom(t, &config.Config{
 		RoomCapacity: 1,
 		RoomTimeout:  time.Minute,
 	})
-	t.Cleanup(func() {
-		_ = gr.scheduler.Shutdown(context.Background())
-	})
 
-	duplicate := player.NewPlayer(ctx, uuid.New(), nil)
-	if !gr.players.Add(duplicate.Id, duplicate) {
-		t.Fatal("failed to seed the duplicate player")
-	}
-	if err := gr.OnJoin(duplicate); !errors.Is(err, ErrPlayerExists) {
+	duplicate, _ := joinPlayer(t, room, uuid.New(), player.NewHumanController())
+
+	if err := room.Join(coreroom.Member{Entity: duplicate}); !errors.Is(err, ErrPlayerExists) {
 		t.Fatalf("duplicate join error = %v, want ErrPlayerExists", err)
 	}
 
-	other := player.NewPlayer(ctx, uuid.New(), nil)
-	if err := gr.OnJoin(other); !errors.Is(err, ErrRoomFull) {
+	other := player.New(uuid.New(), player.DefaultProfile(), player.NewHumanController())
+	if err := room.Join(coreroom.Member{Entity: other}); !errors.Is(err, ErrRoomFull) {
 		t.Fatalf("join at capacity error = %v, want ErrRoomFull", err)
 	}
 
-	if got := gr.players.Len(); got != 1 {
-		t.Fatalf("membership length = %d, want 1", got)
+	if room.Len() != 1 {
+		t.Fatalf("membership length = %d, want 1", room.Len())
 	}
-	if _, ok := gr.players.Get(other.Id); ok {
+	if _, ok := room.Member(other.Key()); ok {
 		t.Fatal("rejected player was added to membership")
 	}
 }
 
-func TestReapStoppedRemovesOnlyStoppedPlayers(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+func TestReapedPlayerLeavesMembership(t *testing.T) {
+	room := newTestRoom(t, &config.Config{
+		RoomCapacity: 8,
+		RoomTimeout:  time.Minute,
+	})
 
-	gr := &GameRoom{
-		Id:      uuid.New(),
-		ctx:     ctx,
-		players: shared.NewSet[uuid.UUID, *player.Player](),
+	stopped, stoppedSession := joinPlayer(t, room, uuid.New(), player.NewHumanController())
+	active, activeSession := joinPlayer(t, room, uuid.New(), player.NewHumanController())
+
+	runCtx, runCancel := context.WithCancel(context.Background())
+	defer runCancel()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		room.Run(runCtx, func(*coreroom.Room) {})
+	}()
+
+	stoppedSession.Stop()
+
+	waitUntil(t, func() bool {
+		_, ok := room.Member(stopped.Key())
+		return !ok
+	})
+	if _, ok := room.Member(active.Key()); !ok {
+		t.Fatal("active player was reaped")
 	}
 
-	stopped := player.NewPlayer(ctx, uuid.New(), nil)
-	active := player.NewPlayer(ctx, uuid.New(), nil)
-	gr.players.Add(stopped.Id, stopped)
-	gr.players.Add(active.Id, active)
-	stopped.Stop()
-
-	gr.reapStopped()
-
-	if _, ok := gr.players.Get(stopped.Id); ok {
-		t.Fatal("stopped player still present after reaping")
-	}
-	if got, ok := gr.players.Get(active.Id); !ok || got != active {
-		t.Fatal("active player was removed by reaping")
+	waitUntil(t, func() bool {
+		return len(activeSession.eventsOfType(t, 100)) > 0
+	})
+	if events := stoppedSession.eventsOfType(t, 100); len(events) > 0 {
+		t.Fatalf("reaped player received %d update frames", len(events))
 	}
 
-	gr.publishSnapshot()
-	if msg := active.NextOutbound(); msg == nil {
-		t.Fatal("remaining player received no broadcast snapshot")
-	}
-	if msg := stopped.NextOutbound(); msg != nil {
-		t.Fatal("reaped player received a broadcast snapshot")
-	}
+	runCancel()
+	<-done
 }

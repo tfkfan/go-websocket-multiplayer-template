@@ -13,10 +13,11 @@ import (
 	"github.com/coder/websocket"
 	"github.com/google/uuid"
 	"github.com/tfkfan/gogame/internal/config"
+	coreroom "github.com/tfkfan/gogame/internal/core/room"
+	"github.com/tfkfan/gogame/internal/core/session"
 	"github.com/tfkfan/gogame/internal/game/event"
 	"github.com/tfkfan/gogame/internal/game/player"
 	"github.com/tfkfan/gogame/internal/game/room"
-	"github.com/tfkfan/gogame/internal/network"
 )
 
 type GameServer struct {
@@ -86,7 +87,7 @@ func (srv *GameServer) handleWsConnection(w http.ResponseWriter, r *http.Request
 
 	if errors.Is(wsErr, context.Canceled) {
 		if ws != nil {
-			network.CloseWebSocket(ws, websocket.StatusGoingAway, "room closed")
+			_ = ws.Close(websocket.StatusGoingAway, "room closed")
 		}
 		return
 	}
@@ -101,7 +102,7 @@ func (srv *GameServer) handleWsConnection(w http.ResponseWriter, r *http.Request
 		return
 	}
 	log.Printf("error on websocket join: %v", wsErr)
-	network.CloseWebSocket(ws, websocket.StatusBadGateway, wsErr.Error())
+	_ = ws.Close(websocket.StatusBadGateway, wsErr.Error())
 }
 
 func (srv *GameServer) tryConnect(r *http.Request, ws *websocket.Conn) error {
@@ -114,30 +115,28 @@ func (srv *GameServer) tryConnect(r *http.Request, ws *websocket.Conn) error {
 		return errors.New("game room not found")
 	}
 
-	p, err := player.ExtractPlayerFromRequest(r, ws, gr.Context())
-	if err != nil {
-		return err
-	}
+	s := session.NewWebSocket(gr.Context(), ws)
+	p := player.New(player.IDFromRequest(r), player.DefaultProfile(), player.NewHumanController())
 
-	if err := gr.SubmitCommand(room.JoinCommand{
-		Player: p,
+	if err := gr.SubmitCommand(coreroom.JoinCommand{
+		Member: coreroom.Member{Entity: p, Session: s},
 	}); err != nil {
-		p.Stop()
+		s.Stop()
 		return err
 	}
 	defer func() {
-		e := gr.SubmitCommand(room.LeaveCommand{Player: p})
+		e := gr.SubmitCommand(coreroom.LeaveCommand{Key: p.Key()})
 		if e != nil {
 			log.Println(e)
 		}
 	}()
 
-	return srv.ReadWebSocket(p, gr)
+	return srv.ReadWebSocket(s, p, gr)
 }
 
-func (srv *GameServer) ReadWebSocket(p *player.Player, gr *room.GameRoom) error {
+func (srv *GameServer) ReadWebSocket(sess *session.WebSocket, p *player.Player, gr *room.GameRoom) error {
 	for {
-		msg, err := p.Read(gr.Context())
+		msg, err := sess.Read(gr.Context())
 		if err != nil {
 			return err
 		}
@@ -185,8 +184,8 @@ func (srv *GameServer) handleRoom(w http.ResponseWriter, r *http.Request) {
 	srv.rooms[gr.Id] = gr
 	srv.gameServerMu.Unlock()
 
-	go gr.Run(srv.serverCtx, func(room *room.BaseRoom) {
-		srv.DeleteGameRoom(room.Id)
+	go gr.Run(srv.serverCtx, func(gameRoom *coreroom.Room) {
+		srv.DeleteGameRoom(gameRoom.Id)
 	})
 
 	txt, err := gr.Id.MarshalText()

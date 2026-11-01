@@ -1,25 +1,39 @@
-package entity
+package snapshot
 
 import "sync"
 
 type Outbox struct {
+	done   <-chan struct{}
 	mu     sync.Mutex
 	data   map[SnapshotType][]byte
 	Signal chan struct{}
 }
 
-func NewOutbox() *Outbox {
+func NewOutbox(done <-chan struct{}) *Outbox {
 	return &Outbox{
+		done:   done,
 		data:   make(map[SnapshotType][]byte),
 		Signal: make(chan struct{}, 1),
 	}
 }
 
-func (o *Outbox) Publish(kind SnapshotType, msg []byte) {
+func (o *Outbox) Publish(kind SnapshotType, msg []byte) bool {
+	if kind >= TypeCount {
+		return false
+	}
+	if o.done != nil {
+		select {
+		case <-o.done:
+			return false
+		default:
+		}
+	}
+
 	o.mu.Lock()
 	o.data[kind] = msg
 	o.mu.Unlock()
 	o.wake()
+	return true
 }
 
 func (o *Outbox) Next() []byte {
