@@ -5,121 +5,109 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
+	"github.com/tfkfan/gogame/internal/config"
+	coreroom "github.com/tfkfan/gogame/internal/core/room"
+	"github.com/tfkfan/gogame/internal/core/snapshot"
+	"github.com/tfkfan/gogame/internal/game/event"
 	"github.com/tfkfan/gogame/internal/game/player"
-	"github.com/tfkfan/gogame/internal/shared"
 )
 
 func TestSendToOnlyTarget(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	room := newTestRoom(t, &config.Config{
+		RoomCapacity: 8,
+		RoomTimeout:  time.Minute,
+	})
 
-	gr := &GameRoom{
-		Id:      uuid.New(),
-		ctx:     ctx,
-		players: shared.NewSet[uuid.UUID, *player.Player](),
+	firstSession := newFakeSession()
+	firstSession.gate = make(chan struct{})
+	first := player.New(uuid.New(), player.DefaultProfile(), player.NewHumanController())
+	if err := room.Join(coreroom.Member{Entity: first, Session: firstSession}); err != nil {
+		t.Fatalf("join failed: %v", err)
 	}
-
-	first := player.NewPlayer(ctx, uuid.New(), nil)
-	second := player.NewPlayer(ctx, uuid.New(), nil)
-	if !gr.players.Add(first.Id, first) || !gr.players.Add(second.Id, second) {
-		t.Fatal("failed to seed players")
-	}
+	_, secondSession := joinPlayer(t, room, uuid.New(), player.NewHumanController())
 
 	for _, message := range []string{"old", "secret"} {
-		if err := gr.SendTo(first.Id, MsgPrivate, map[string]string{"message": message}); err != nil {
+		if err := room.SendTo(first.Id, event.MsgPrivate, map[string]string{"message": message}); err != nil {
 			t.Fatalf("SendTo failed: %v", err)
 		}
 	}
 
-	gr.publishSnapshot()
+	room.publishSnapshot()
+	close(firstSession.gate)
 
-	privateMsg := first.NextOutbound()
-	if privateMsg == nil {
-		t.Fatal("target player received no private frame")
-	}
+	waitUntil(t, func() bool {
+		return len(firstSession.eventsOfType(t, 110)) > 0 && len(firstSession.eventsOfType(t, 100)) > 0
+	})
 
-	var privateEvent struct {
-		Type MessageType `json:"type"`
-		Data struct {
-			Message string `json:"message"`
-		} `json:"data"`
+	private := firstSession.eventsOfType(t, 110)
+	if len(private) != 1 {
+		t.Fatalf("private frames = %d, want one coalesced frame", len(private))
 	}
-	if err := json.Unmarshal(privateMsg, &privateEvent); err != nil {
-		t.Fatalf("invalid private event: %v", err)
+	var payload map[string]string
+	if err := json.Unmarshal(private[0].Data, &payload); err != nil {
+		t.Fatalf("invalid private payload %q: %v", private[0].Data, err)
 	}
-	if privateEvent.Type != MsgPrivate || privateEvent.Data.Message != "secret" {
-		t.Fatalf("unexpected private event: %+v", privateEvent)
-	}
-
-	firstUpdate := first.NextOutbound()
-	if firstUpdate == nil {
-		t.Fatal("target player received no update")
-	}
-	var firstEnvelope struct {
-		Type MessageType `json:"type"`
-	}
-	if err := json.Unmarshal(firstUpdate, &firstEnvelope); err != nil {
-		t.Fatalf("invalid target update: %v", err)
-	}
-	if firstEnvelope.Type != MsgUpdate {
-		t.Fatalf("unexpected target update: %+v", firstEnvelope)
-	}
-	if extra := first.NextOutbound(); extra != nil {
-		t.Fatal("expected only one private and one update frame")
+	if payload["message"] != "secret" {
+		t.Fatalf("private payload = %q, want the latest message", payload["message"])
 	}
 
-	secondMsg := second.NextOutbound()
-	if secondMsg == nil {
-		t.Fatal("non-target player received no update")
+	waitUntil(t, func() bool {
+		return len(secondSession.eventsOfType(t, 100)) > 0
+	})
+	if events := secondSession.eventsOfType(t, 110); len(events) != 0 {
+		t.Fatalf("second player received %d private frames", len(events))
 	}
-	var secondEnvelope struct {
-		Type MessageType `json:"type"`
+}
+
+func TestSendToReportsMissingSessionlessAndClosed(t *testing.T) {
+	room := newTestRoom(t, &config.Config{
+		RoomCapacity: 8,
+		RoomTimeout:  time.Minute,
+	})
+
+	sessionless := player.New(uuid.New(), player.DefaultProfile(), player.NewHumanController())
+	if err := room.Join(memberOf(sessionless)); err != nil {
+		t.Fatalf("session-less join failed: %v", err)
 	}
-	if err := json.Unmarshal(secondMsg, &secondEnvelope); err != nil {
-		t.Fatalf("invalid non-target update: %v", err)
+	if err := room.SendTo(sessionless.Id, event.MsgPrivate, "x"); !errors.Is(err, ErrNoSession) {
+		t.Fatalf("session-less send error = %v, want ErrNoSession", err)
 	}
-	if secondEnvelope.Type != MsgUpdate {
-		t.Fatalf("unexpected non-target update: %+v", secondEnvelope)
-	}
-	if extra := second.NextOutbound(); extra != nil {
-		t.Fatal("non-target player received a private frame")
+	if err := room.SendTo(uuid.New(), event.MsgPrivate, "x"); !errors.Is(err, ErrPlayerNotFound) {
+		t.Fatalf("unknown player send error = %v, want ErrPlayerNotFound", err)
 	}
 
-	if err := gr.SendTo(uuid.New(), MsgPrivate, nil); !errors.Is(err, ErrPlayerNotFound) {
-		t.Fatalf("expected ErrPlayerNotFound, got %v", err)
-	}
-
-	first.Stop()
-	if err := gr.SendTo(first.Id, MsgPrivate, nil); !errors.Is(err, ErrPlayerNotFound) {
-		t.Fatalf("expected ErrPlayerNotFound for stopped player, got %v", err)
-	}
-
-	cancel()
-	if err := gr.SendTo(second.Id, MsgPrivate, nil); !errors.Is(err, ErrRoomClosed) {
-		t.Fatalf("expected ErrRoomClosed for closed room, got %v", err)
+	roomCtx, roomCancel := context.WithCancel(context.Background())
+	closedRoom := NewGameRoom(roomCtx, roomCancel, &config.Config{
+		RoomCapacity: 8,
+		RoomTimeout:  time.Minute,
+	})
+	t.Cleanup(func() {
+		roomCancel()
+		_ = closedRoom.Shutdown()
+	})
+	roomCancel()
+	if err := closedRoom.SendTo(uuid.New(), event.MsgPrivate, "x"); !errors.Is(err, ErrRoomClosed) {
+		t.Fatalf("closed room send error = %v, want ErrRoomClosed", err)
 	}
 }
 
 func TestPublishToConcurrentWithSnapshots(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	room := newTestRoom(t, &config.Config{
+		RoomCapacity: 8,
+		RoomTimeout:  time.Minute,
+	})
 
-	gr := &GameRoom{
-		Id:      uuid.New(),
-		ctx:     ctx,
-		players: shared.NewSet[uuid.UUID, *player.Player](),
-	}
-	p := player.NewPlayer(ctx, uuid.New(), nil)
-	gr.players.Add(p.Id, p)
+	p, session := joinPlayer(t, room, uuid.New(), player.NewHumanController())
 
 	const calls = 200
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		for i := 0; i < calls; i++ {
-			if err := gr.PublishTo(p.Id, player.CustomType, MsgPrivate, i); err != nil {
+			if err := room.PublishTo(p.Id, snapshot.CustomType, event.MsgPrivate, i); err != nil {
 				t.Errorf("PublishTo failed: %v", err)
 				return
 			}
@@ -127,8 +115,11 @@ func TestPublishToConcurrentWithSnapshots(t *testing.T) {
 	}()
 
 	for i := 0; i < calls; i++ {
-		gr.publishSnapshot()
-		_ = p.NextOutbound()
+		room.publishSnapshot()
 	}
 	<-done
+
+	waitUntil(t, func() bool {
+		return len(session.eventsOfType(t, 110)) > 0
+	})
 }

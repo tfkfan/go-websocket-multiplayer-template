@@ -1,127 +1,133 @@
 # shared-set Specification
 
 ## Purpose
-Defines the generic, concurrency-safe keyed set used for room membership: construction, add and
-lookup, key-based removal, enumeration, bulk clear, and concurrent access.
+
+Defines the concurrent keyed set used for room membership: insertion that refuses duplicates,
+lookup, key-based removal, enumeration, bulk clear, and safe concurrent access.
 
 ## Requirements
 
 ### Requirement: Construction
 
-`NewSet` SHALL create an empty set for any comparable key type and any value type; the returned
-set SHALL be ready for use, and the zero value SHALL NOT be used.
+A set SHALL be created empty for any comparable key type and arbitrary value type.
 
 #### Scenario: New set is empty
+
 - **WHEN** a set is created
-- **THEN** its length is zero, its listing is empty, and every lookup reports absence
+- **THEN** its length is zero and listing returns no values
 
 #### Scenario: Any comparable key and value types are supported
-- **WHEN** sets are instantiated for distinct key and value types, such as UUID to player and
-  string to integer
-- **THEN** membership operations work for each instance without type-specific code
+
+- **WHEN** the set is instantiated with a UUID key and a pointer value
+- **THEN** it stores and returns those values unchanged
 
 ### Requirement: Add-if-absent
 
-`Add(key, value)` SHALL insert the pair only when the key is absent, returning true on insertion
-and false when the key already exists; an existing entry SHALL NOT be replaced.
+Adding SHALL insert the pair and return true, or leave the set unchanged and return false when
+the key already exists.
 
 #### Scenario: New key is inserted
-- **WHEN** a value is added under a key not present in the set
-- **THEN** the add reports true and the value is retrievable under that key
+
+- **WHEN** an absent key is added
+- **THEN** the call returns true and the value is retrievable
 
 #### Scenario: Duplicate key is rejected
-- **WHEN** a value is added under a key that already exists
-- **THEN** the add reports false and the original value remains retrievable
+
+- **WHEN** an existing key is added again with a different value
+- **THEN** the call returns false and the stored value is unchanged
 
 ### Requirement: Lookup
 
-`Get(key)` SHALL return the stored value with true when the key is present, and the value type's
-zero value with false otherwise.
+Lookup SHALL return the stored value and true for a present key, and the zero value and false
+otherwise.
 
 #### Scenario: Present key returns its value
-- **WHEN** a key in the set is looked up
-- **THEN** the stored value and true are returned
+
+- **WHEN** an existing key is requested
+- **THEN** the original value and true are returned
 
 #### Scenario: Missing key reports absence
-- **WHEN** a key not in the set is looked up
+
+- **WHEN** an unknown key is requested
 - **THEN** the zero value and false are returned
 
 ### Requirement: Key-based removal
 
-`Remove(key)` SHALL delete the entry for the key and return its value with true; when the key is
-absent it SHALL return the zero value with false and leave the set unchanged. Removal SHALL match
-by key alone and SHALL NOT compare the stored value.
+Removal SHALL delete the entry by key and return the removed value and true, or the zero value
+and false when the key is absent.
 
 #### Scenario: Present key is removed
-- **WHEN** a key in the set is removed
-- **THEN** its value and true are returned and later lookups of that key report absence
+
+- **WHEN** an existing key is removed
+- **THEN** the value is returned and the key is no longer present
 
 #### Scenario: Missing key is ignored
-- **WHEN** a key not in the set is removed
-- **THEN** the zero value and false are returned and the length is unchanged
 
-#### Scenario: Removal does not depend on the stored value
-- **WHEN** a key holding a composite or non-comparable value is removed
-- **THEN** the entry is deleted and its value returned, because only the key is compared
+- **WHEN** an absent key is removed
+- **THEN** the set is unchanged and false is returned
 
 ### Requirement: Enumeration and length
 
-`Len` SHALL report the number of entries. `List` SHALL return a newly allocated slice of the
-current values in unspecified order; changing that slice SHALL NOT change the set.
+Listing SHALL return a snapshot of the current values whose order SHALL NOT be relied on, and
+length SHALL report the current member count. Mutating the set after a listing SHALL NOT change
+the returned slice.
 
 #### Scenario: Listing reflects current membership
-- **WHEN** entries are added and removed and then listed
-- **THEN** the listing contains exactly the currently stored values with no duplicates
+
+- **WHEN** entries are added and removed
+- **THEN** listing returns exactly the current values
 
 #### Scenario: Listing is a snapshot
-- **WHEN** a caller overwrites or reorders the slice returned by a listing
-- **THEN** subsequent lookups and listings still reflect the stored entries
+
+- **WHEN** entries change after a listing is taken
+- **THEN** the earlier slice is unchanged
 
 ### Requirement: Bulk clear
 
-`Clear` SHALL remove every entry, return the removed values in unspecified order, and leave the
-set empty; clearing an empty set SHALL return an empty result.
+Clear SHALL remove every entry, return the removed values, and reset the set to empty. Clearing
+an empty set SHALL return an empty slice.
 
 #### Scenario: Clear returns and removes everything
+
 - **WHEN** a populated set is cleared
-- **THEN** every prior value is returned and the set reports zero length
+- **THEN** every previous value is returned and the length becomes zero
 
 #### Scenario: Clearing an empty set is safe
+
 - **WHEN** an empty set is cleared
-- **THEN** it returns no values and remains empty
+- **THEN** the result is empty and the set stays usable
 
 ### Requirement: Concurrent access
 
-All set operations SHALL be safe for concurrent use by multiple goroutines without external
-synchronization; each operation SHALL be individually atomic, and no operation SHALL deadlock
-when callers mix reads, writes, listings, and clears.
+All operations SHALL be safe for concurrent use and SHALL NOT race under mixed reads and writes.
 
 #### Scenario: Concurrent mixed operations are race-free
-- **WHEN** many goroutines add, look up, remove, list, and read the length at the same time
-- **THEN** no data race or deadlock occurs and every surviving entry is consistent
+
+- **WHEN** goroutines read, add, remove, list, and clear the same set concurrently
+- **THEN** the race detector reports no data race
 
 ### Requirement: Room membership integration
 
-`GameRoom` SHALL keep its players in a shared set keyed by player UUID and SHALL use it for
-duplicate detection, capacity checks, targeted delivery lookup, snapshot and movement iteration,
-disconnect reaping, and close-time clearing.
+Room membership SHALL be one set keyed by player identifier. Admission SHALL use add-if-absent,
+lookup SHALL drive delivery and snapshot membership, and disconnect or close SHALL remove or
+clear entries.
 
 #### Scenario: Membership drives admission and delivery
-- **WHEN** a player is admitted and later targeted for a message
-- **THEN** duplicate identifiers are rejected, capacity is enforced, and the targeted player is
-  found through the same membership set
+
+- **WHEN** a player joins and later disconnects
+- **THEN** admission reflects the add, and delivery and snapshots reflect the removal
 
 #### Scenario: Snapshots and movement cover current members
-- **WHEN** a tick publishes a snapshot or advances movement
-- **THEN** it iterates exactly the players currently in the set
+
+- **WHEN** a tick runs
+- **THEN** movement, snapshots, and indexing use the current membership listing
 
 #### Scenario: Disconnect and close update membership
-- **WHEN** a player disconnects or the room closes
-- **THEN** the disconnected player is removed, freeing capacity, and close clears the set and
-  returns every player for shutdown
+
+- **WHEN** a player leaves or the room closes
+- **THEN** removal or clear updates the set before later snapshots
 
 #### Scenario: A stale leave removes a reused identifier
-- **WHEN** a leave command for an old connection is processed after a newer player reused the
-  same UUID
-- **THEN** the newer player is removed from membership, because removal matches by key alone and
-  does not check identity
+
+- **WHEN** a leave arrives for an identifier already removed or reused
+- **THEN** removal is keyed by identifier and leaves other members untouched

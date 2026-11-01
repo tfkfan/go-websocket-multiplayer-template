@@ -1,4 +1,4 @@
-package room
+package event
 
 import (
 	"encoding/json"
@@ -54,6 +54,6 @@ type outboundEvent struct {
 	Data any         `json:"data"`
 }
 
-func marshalEvent(messageType MessageType, data any) ([]byte, error) {
+func MarshalEvent(messageType MessageType, data any) ([]byte, error) {
 	return json.Marshal(outboundEvent{Type: messageType, Data: data})
 }

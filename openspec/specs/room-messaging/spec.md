@@ -1,111 +1,134 @@
 # room-messaging Specification
 
 ## Purpose
-Defines how outbound frames are staged per player and delivered, including broadcast snapshots,
-targeted private messages, latest-per-type coalescing, and extension channels.
+
+Defines the per-player outbound mailbox, its ordered drain, coalescing rules, the shared
+broadcast snapshot, the writer that delivers frames, targeted private messages, error
+semantics for staged sends, and the extension channel for new snapshot types.
 
 ## Requirements
 
 ### Requirement: Typed outbox channels
 
-Each connection SHALL have an outbox holding one latest payload per snapshot type:
-`SystemType`, `PrivateType`, `BroadcastType`, and `CustomType`; the writer SHALL send pending
-types in ascending numeric order.
+Each outbound connection SHALL own an outbox holding at most one payload per snapshot type, with
+the numeric order `SystemType`, `PrivateType`, `BroadcastType`, `CustomType`, bounded by
+`TypeCount`. Publishing a type at or above `TypeCount` SHALL be dropped, and publishing after
+the connection context is done SHALL be dropped. A publish SHALL wake a single coalesced signal.
 
 #### Scenario: Writer drains channels in numeric order
-- **WHEN** all four snapshot types have a pending payload for one player
-- **THEN** the writer sends them in the order System, Private, Broadcast, Custom
+
+- **WHEN** payloads of several types are waiting in one outbox
+- **THEN** they are read in ascending snapshot-type order
+
+#### Scenario: Unbounded type is dropped
+
+- **WHEN** a payload is published with a snapshot type at or above `TypeCount`
+- **THEN** the outbox is unchanged
 
 ### Requirement: Latest-per-type coalescing
 
-Publishing a payload for a type that already has a pending payload SHALL replace it, so repeated
-publishes before the next write collapse to the newest payload and no unbounded queue grows.
+Each outbox slot SHALL hold only the newest payload of that type. A newer publish of the same
+type SHALL replace the pending payload, and a slow client SHALL skip intermediate snapshots
+rather than queue them.
 
 #### Scenario: Repeated private publishes collapse
-- **WHEN** two private payloads are published for the same player before the writer drains the
-  private slot
-- **THEN** the player receives one private frame containing only the newer payload
+
+- **WHEN** two private payloads are staged before the writer drains the slot
+- **THEN** only the second payload is delivered
 
 #### Scenario: Slow client skips intermediate updates
-- **WHEN** a player connection cannot keep up with the tick rate
-- **THEN** only the latest broadcast snapshot is pending and older snapshots are silently skipped
+
+- **WHEN** several ticks publish broadcasts before a client's writer drains
+- **THEN** the writer delivers the newest broadcast and skips the rest
 
 ### Requirement: Shared broadcast snapshot
 
-Each tick with at least one player SHALL increment the room tick, serialize one UPDATE payload
-that carries that tick, and publish the identical payload to every player's `BroadcastType`
-slot; a tick with no players SHALL publish nothing.
+Each tick SHALL marshal one UPDATE and stage the same bytes for every connected member on the
+broadcast channel. An empty room SHALL publish nothing.
 
 #### Scenario: All players receive the same snapshot
-- **WHEN** a room with multiple players advances one tick
-- **THEN** every player receives byte-identical UPDATE payloads with the same tick number
+
+- **WHEN** a tick snapshot is published to a room with several connected members
+- **THEN** every connected member's broadcast slot holds the same payload
 
 #### Scenario: Empty room publishes nothing
-- **WHEN** a tick occurs while the room has no players
-- **THEN** no snapshot is serialized or published
+
+- **WHEN** the room has no members
+- **THEN** the tick publishes no snapshot
 
 ### Requirement: Writer delivery
 
-Each admitted player SHALL have exactly one writer that drains the pending outbox payloads in
-order, waits for an outbox signal when the outbox is empty, and exits when the player or room
-stops; each write SHALL be bounded to 5 seconds, and a failed write SHALL close that connection
-with status 1011.
+Each admitted player SHALL have exactly one writer goroutine. The writer SHALL drain the next
+payload, and when the outbox is empty SHALL wait on the outbox signal, the player context, or
+the room context. A write SHALL be bounded by a 5 second deadline derived from the room
+context. A failed write SHALL close that player's socket with status 1011 and end that writer
+only; room close SHALL end every writer.
 
 #### Scenario: Writer waits for work
-- **WHEN** a player's outbox is empty
-- **THEN** the writer blocks until a payload is staged or the player or room stops
+
+- **WHEN** the outbox is empty
+- **THEN** the writer blocks until a payload is published or the player or room stops
 
 #### Scenario: Failed write closes only that player
-- **WHEN** a write to one player fails or exceeds 5 seconds while the room is open
-- **THEN** that connection closes with status 1011 and the writer exits
+
+- **WHEN** writing to one player fails while the room is still running
+- **THEN** that player's socket is closed with 1011 and other players continue receiving frames
 
 #### Scenario: Room close ends writers
+
 - **WHEN** the room closes
-- **THEN** every writer exits without writing further frames
+- **THEN** every writer goroutine returns
 
 ### Requirement: Targeted private messages
 
-`SendTo` SHALL stage a payload in the target player's `PrivateType` slot, and `PublishTo` SHALL
-stage a payload in the requested snapshot slot; the payload SHALL be a JSON envelope of the given
-message type and data.
+`SendTo` SHALL publish on the private channel, and `PublishTo` SHALL accept an explicit snapshot
+type. Private frames SHALL be delivered only to the named player and SHALL never be included in
+the shared UPDATE.
 
 #### Scenario: Only the target receives a private frame
-- **WHEN** a private payload is published for one player
-- **THEN** that player receives a PRIVATE frame with the payload and no other player receives it
+
+- **WHEN** a private payload is staged for one member
+- **THEN** only that member's outbox holds it
 
 #### Scenario: Private data never enters the broadcast
-- **WHEN** a private payload is staged before a tick
-- **THEN** the shared UPDATE payload does not contain that private data
+
+- **WHEN** a tick publishes the shared snapshot after a private send
+- **THEN** the broadcast payload does not contain the private data
 
 ### Requirement: Outbound error semantics
 
-`PublishTo` SHALL return a room-closed error when the room is closed or its context is done, a
-player-not-found error when the target is missing or stopped, and nil when the payload has been
-staged. A nil result does not acknowledge delivery, and a player stopping concurrently may cause
-the staged frame to be dropped.
+`SendTo` and `PublishTo` SHALL return `ErrRoomClosed` when the room is closed or its context is
+done, and `ErrPlayerNotFound` when the player is not a member or has stopped. A nil return
+SHALL mean the payload was staged, not delivered, and a stop racing a send SHALL drop the
+frame. These calls SHALL NOT require the actor goroutine.
 
 #### Scenario: Unknown player is reported
-- **WHEN** a payload is published for an identifier that is not in the room
-- **THEN** the call returns a player-not-found error
+
+- **WHEN** a send targets an identifier that is not a member
+- **THEN** the call returns `ErrPlayerNotFound`
 
 #### Scenario: Stopped player is reported
-- **WHEN** a payload is published for a player whose connection has stopped
-- **THEN** the call returns a player-not-found error
+
+- **WHEN** a send targets a member whose context has stopped
+- **THEN** the call returns `ErrPlayerNotFound`
 
 #### Scenario: Closing room is reported
-- **WHEN** a payload is published after the room context is canceled
-- **THEN** the call returns a room-closed error
+
+- **WHEN** a send runs while the room is closing
+- **THEN** the call returns `ErrRoomClosed`
 
 #### Scenario: Publish racing a stop may drop the frame
-- **WHEN** a player stops between validation and staging
-- **THEN** the call may return nil while no frame is delivered
+
+- **WHEN** a player stops between the membership check and the publish
+- **THEN** the publish is dropped and the call reports no delivery guarantee
 
 ### Requirement: Extension channel
 
-A new outbound channel SHALL be added by declaring a snapshot type before `TypeCount` and
-publishing through `PublishTo`; no other wiring SHALL be required. `CustomType` SHALL remain
-reserved as the general extension slot.
+New outbound data SHALL be published by adding a snapshot type before `TypeCount` and calling
+`PublishTo` with that type and a message type. The outbox and writer SHALL pick the new type up
+in numeric order without further changes.
 
 #### Scenario: Custom channel is delivered
-- **WHEN** a payload is published for a custom snapshot type
-- **THEN** the writer sends it in numeric order between the built-in channels
+
+- **WHEN** a payload is published with the custom snapshot type
+- **THEN** the target's writer delivers it after system, private, and broadcast payloads

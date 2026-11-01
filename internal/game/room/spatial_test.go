@@ -8,8 +8,9 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/tfkfan/gogame/internal/config"
+	coreroom "github.com/tfkfan/gogame/internal/core/room"
+	"github.com/tfkfan/gogame/internal/core/spatial"
 	"github.com/tfkfan/gogame/internal/game/player"
-	"github.com/tfkfan/gogame/internal/spatial"
 )
 
 func newSpatialTestRoom(t *testing.T, capacity int) *GameRoom {
@@ -21,35 +22,37 @@ func newSpatialTestRoom(t *testing.T, capacity int) *GameRoom {
 		RoomTimeout:  time.Minute,
 	})
 	t.Cleanup(func() {
-		_ = room.scheduler.Shutdown(context.Background())
 		cancel()
+		_ = room.Shutdown()
 	})
 	return room
 }
 
-func addSpatialPlayer(t *testing.T, room *GameRoom, id uuid.UUID, position player.Vec2, radius float64, keys ...string) *player.Player {
+func addSpatialPlayer(t *testing.T, room *GameRoom, id uuid.UUID, position spatial.Vec2, radius float64, keys ...string) *player.Player {
 	t.Helper()
 
-	p := player.NewPlayer(room.ctx, id, nil)
-	p.Spawn(position, radius, "#ffffff")
+	profile := player.DefaultProfile()
+	profile.Radius = radius
+	p := player.New(id, profile, player.NewHumanController())
 	for _, key := range keys {
 		p.ApplyKey(key, true)
 	}
-	if !room.players.Add(p.Id, p) {
-		t.Fatalf("failed to add player %s", id)
+	if err := room.Join(coreroom.Member{Entity: p}); err != nil {
+		t.Fatalf("failed to join player %s: %v", id, err)
 	}
+	p.Spawn(room.world, position, "#ffffff")
 	return p
 }
 
-func playerPosition(p *player.Player) player.Vec2 {
+func playerPosition(p *player.Player) spatial.Vec2 {
 	return p.Snapshot().Position
 }
 
-func positionDistance(a, b player.Vec2) float64 {
+func positionDistance(a, b spatial.Vec2) float64 {
 	return math.Hypot(a.X-b.X, a.Y-b.Y)
 }
 
-func assertPlayerAt(t *testing.T, p *player.Player, want player.Vec2) {
+func assertPlayerAt(t *testing.T, p *player.Player, want spatial.Vec2) {
 	t.Helper()
 	if got := playerPosition(p); got != want {
 		t.Fatalf("player %s at %+v, want %+v", p.Id, got, want)
@@ -83,12 +86,12 @@ func assertPlayerInsideWorld(t *testing.T, p *player.Player) {
 
 func TestSpatialCollisionMovingPlayerKeepsMoving(t *testing.T) {
 	room := newSpatialTestRoom(t, 8)
-	firstStart := player.Vec2{X: 90, Y: 300}
-	secondStart := player.Vec2{X: 150, Y: 300}
+	firstStart := spatial.Vec2{X: 90, Y: 300}
+	secondStart := spatial.Vec2{X: 150, Y: 300}
 	first := addSpatialPlayer(t, room, uuid.New(), firstStart, 25, "RIGHT")
 	second := addSpatialPlayer(t, room, uuid.New(), secondStart, 25)
 
-	room.OnUpdate(0.1)
+	room.OnTick(0.1)
 
 	if got := playerPosition(first).X; got <= firstStart.X {
 		t.Fatalf("mover X = %g, want movement past its start", got)
@@ -102,11 +105,11 @@ func TestSpatialCollisionMovingPlayerKeepsMoving(t *testing.T) {
 
 func TestSpatialCollisionKeepsTangentialMovement(t *testing.T) {
 	room := newSpatialTestRoom(t, 8)
-	secondStart := player.Vec2{X: 150, Y: 330}
-	first := addSpatialPlayer(t, room, uuid.New(), player.Vec2{X: 90, Y: 300}, 25, "RIGHT", "DOWN")
+	secondStart := spatial.Vec2{X: 150, Y: 330}
+	first := addSpatialPlayer(t, room, uuid.New(), spatial.Vec2{X: 90, Y: 300}, 25, "RIGHT", "DOWN")
 	second := addSpatialPlayer(t, room, uuid.New(), secondStart, 25)
 
-	room.OnUpdate(0.1)
+	room.OnTick(0.1)
 
 	position := playerPosition(first)
 	if position.X <= 90 {
@@ -121,11 +124,11 @@ func TestSpatialCollisionKeepsTangentialMovement(t *testing.T) {
 
 func TestSpatialCollisionLeavesOtherPlayersMoving(t *testing.T) {
 	room := newSpatialTestRoom(t, 8)
-	first := addSpatialPlayer(t, room, uuid.New(), player.Vec2{X: 90, Y: 300}, 25, "RIGHT")
-	second := addSpatialPlayer(t, room, uuid.New(), player.Vec2{X: 150, Y: 300}, 25)
-	third := addSpatialPlayer(t, room, uuid.New(), player.Vec2{X: 600, Y: 300}, 25, "RIGHT")
+	first := addSpatialPlayer(t, room, uuid.New(), spatial.Vec2{X: 90, Y: 300}, 25, "RIGHT")
+	second := addSpatialPlayer(t, room, uuid.New(), spatial.Vec2{X: 150, Y: 300}, 25)
+	third := addSpatialPlayer(t, room, uuid.New(), spatial.Vec2{X: 600, Y: 300}, 25, "RIGHT")
 
-	room.OnUpdate(0.1)
+	room.OnTick(0.1)
 
 	if got := playerPosition(third).X; got <= 600 {
 		t.Fatalf("uninvolved player X = %g, want movement to continue", got)
@@ -135,11 +138,11 @@ func TestSpatialCollisionLeavesOtherPlayersMoving(t *testing.T) {
 
 func TestSpatialCollisionKeepsPlayersInsideWorld(t *testing.T) {
 	room := newSpatialTestRoom(t, 8)
-	wallStart := player.Vec2{X: 25, Y: 300}
+	wallStart := spatial.Vec2{X: 25, Y: 300}
 	wall := addSpatialPlayer(t, room, uuid.New(), wallStart, 25)
-	mover := addSpatialPlayer(t, room, uuid.New(), player.Vec2{X: 80, Y: 300}, 25, "LEFT")
+	mover := addSpatialPlayer(t, room, uuid.New(), spatial.Vec2{X: 80, Y: 300}, 25, "LEFT")
 
-	room.OnUpdate(0.1)
+	room.OnTick(0.1)
 
 	assertPlayerAt(t, wall, wallStart)
 	if got := playerPosition(mover).X; math.Abs(got-75) > 1e-6 {
@@ -152,12 +155,12 @@ func TestSpatialCollisionKeepsPlayersInsideWorld(t *testing.T) {
 
 func TestSpatialNearestPlayers(t *testing.T) {
 	room := newSpatialTestRoom(t, 8)
-	first := addSpatialPlayer(t, room, uuid.New(), player.Vec2{X: 100, Y: 100}, 25)
-	second := addSpatialPlayer(t, room, uuid.New(), player.Vec2{X: 200, Y: 100}, 25)
-	addSpatialPlayer(t, room, uuid.New(), player.Vec2{X: 300, Y: 100}, 25)
-	addSpatialPlayer(t, room, uuid.New(), player.Vec2{X: 500, Y: 100}, 25)
+	first := addSpatialPlayer(t, room, uuid.New(), spatial.Vec2{X: 100, Y: 100}, 25)
+	second := addSpatialPlayer(t, room, uuid.New(), spatial.Vec2{X: 200, Y: 100}, 25)
+	addSpatialPlayer(t, room, uuid.New(), spatial.Vec2{X: 300, Y: 100}, 25)
+	addSpatialPlayer(t, room, uuid.New(), spatial.Vec2{X: 500, Y: 100}, 25)
 
-	room.OnUpdate(0)
+	room.OnTick(0)
 
 	nearest := room.spatial.Nearest(worldVec(120, 100), 0, 2)
 	if len(nearest) != 2 {
@@ -176,11 +179,13 @@ func TestSpatialNearestPlayers(t *testing.T) {
 
 func TestSpatialReapRemovesPlayerFromIndex(t *testing.T) {
 	room := newSpatialTestRoom(t, 8)
-	stopped := addSpatialPlayer(t, room, uuid.New(), player.Vec2{X: 100, Y: 100}, 25)
-	active := addSpatialPlayer(t, room, uuid.New(), player.Vec2{X: 200, Y: 100}, 25)
-	stopped.Stop()
+	stopped := addSpatialPlayer(t, room, uuid.New(), spatial.Vec2{X: 100, Y: 100}, 25)
+	active := addSpatialPlayer(t, room, uuid.New(), spatial.Vec2{X: 200, Y: 100}, 25)
+	if err := room.Leave(stopped.Key()); err != nil {
+		t.Fatalf("leave failed: %v", err)
+	}
 
-	room.OnUpdate(0)
+	room.OnTick(0)
 
 	if got := room.spatial.Len(); got != 1 {
 		t.Fatalf("spatial index length = %d, want 1", got)
@@ -198,7 +203,7 @@ func TestSpatialCollisionInsertionOrderIndependent(t *testing.T) {
 		uuid.MustParse("00000000-0000-0000-0000-000000000003"),
 		uuid.MustParse("00000000-0000-0000-0000-000000000004"),
 	}
-	positions := []player.Vec2{
+	positions := []spatial.Vec2{
 		{X: 200, Y: 300},
 		{X: 280, Y: 300},
 		{X: 200, Y: 500},
@@ -216,14 +221,14 @@ func TestSpatialCollisionInsertionOrderIndependent(t *testing.T) {
 	for i, id := range ids {
 		firstPlayers[id] = addSpatialPlayer(t, firstRoom, id, positions[i], 25, keys[i]...)
 	}
-	firstRoom.OnUpdate(0.1)
+	firstRoom.OnTick(0.1)
 
 	secondRoom := newSpatialTestRoom(t, 8)
 	secondPlayers := make(map[uuid.UUID]*player.Player, len(ids))
 	for i := len(ids) - 1; i >= 0; i-- {
 		secondPlayers[ids[i]] = addSpatialPlayer(t, secondRoom, ids[i], positions[i], 25, keys[i]...)
 	}
-	secondRoom.OnUpdate(0.1)
+	secondRoom.OnTick(0.1)
 
 	for _, id := range ids {
 		firstPosition := playerPosition(firstPlayers[id])

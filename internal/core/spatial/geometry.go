@@ -7,8 +7,8 @@ import (
 const epsilon = 1e-9
 
 type Vec2 struct {
-	X float64
-	Y float64
+	X float64 `json:"x"`
+	Y float64 `json:"y"`
 }
 
 func (v Vec2) Add(other Vec2) Vec2 {

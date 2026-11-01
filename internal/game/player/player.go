@@ -1,15 +1,13 @@
 package player
 
 import (
-	"context"
-	"math"
 	"net/http"
-	"sync/atomic"
 
-	"github.com/coder/websocket"
 	"github.com/google/uuid"
-	"github.com/tfkfan/gogame/internal/network"
-	"github.com/tfkfan/gogame/internal/spatial"
+	"github.com/tfkfan/gogame/internal/config"
+	"github.com/tfkfan/gogame/internal/core/entity"
+	m "github.com/tfkfan/gogame/internal/core/math"
+	"github.com/tfkfan/gogame/internal/core/spatial"
 )
 
 const Speed = 260.0
@@ -28,146 +26,94 @@ var keyBits = map[string]uint32{
 	"RIGHT": keyRight,
 }
 
-type Player struct {
-	Id uuid.UUID
-
-	ws     *websocket.Conn
-	ctx    context.Context
-	cancel context.CancelFunc
-
-	keys atomic.Uint32
-
-	position Vec2
-	radius   float64
-	color    string
-
-	outbox *outbox
+type State struct {
+	ID       uuid.UUID    `json:"id"`
+	Position spatial.Vec2 `json:"position"`
+	Radius   float64      `json:"radius"`
+	Color    string       `json:"color"`
 }
 
-func ExtractPlayerFromRequest(r *http.Request, ws *websocket.Conn, ctx context.Context) (*Player, error) {
+type Profile struct {
+	Speed  float64
+	Radius float64
+	Color  string
+}
+
+func DefaultProfile() Profile {
+	return Profile{
+		Speed:  Speed,
+		Radius: config.PlayerRadius,
+	}
+}
+
+type Player struct {
+	entity.Base
+
+	world      entity.World
+	profile    Profile
+	controller Controller
+}
+
+func IDFromRequest(r *http.Request) uuid.UUID {
 	id, err := uuid.Parse(r.Header.Get("X-Player-Id"))
 	if err != nil {
-		id = uuid.New()
+		return uuid.New()
 	}
-	return NewPlayer(ctx, id, ws), nil
+	return id
 }
 
-func NewPlayer(ctx context.Context, id uuid.UUID, ws *websocket.Conn) *Player {
-	playerCtx, cancel := context.WithCancel(ctx)
+func New(id uuid.UUID, profile Profile, controller Controller) *Player {
 	return &Player{
-		Id:     id,
-		ws:     ws,
-		ctx:    playerCtx,
-		cancel: cancel,
-		outbox: newOutbox(),
+		Id:         id,
+		profile:    profile,
+		controller: controller,
 	}
 }
 
-func (p *Player) Spawn(pos Vec2, radius float64, color string) {
-	p.position = pos
-	p.radius = radius
-	p.color = color
+func (p *Player) Snapshot() State {
+	return State{
+		ID:       p.Id,
+		Position: p.Position,
+		Radius:   p.profile.Radius,
+		Color:    p.profile.Color,
+	}
 }
 
-func (p *Player) Key() string {
-	return p.Id.String()
+func (p *Player) Contribute() (any, bool) {
+	return p.Snapshot(), true
+}
+
+func (p *Player) Spawn(world entity.World, position spatial.Vec2, color string) {
+	p.world = world
+	p.Position = position
+	p.profile.Color = color
 }
 
 func (p *Player) Shape() spatial.Shape {
 	return spatial.Circle{
-		Center: spatial.Vec2{X: p.position.X, Y: p.position.Y},
-		Radius: p.radius,
+		Center: spatial.Vec2{X: p.Position.X, Y: p.Position.Y},
+		Radius: p.profile.Radius,
 	}
 }
 
-func (p *Player) Solid() bool {
-	return true
+func (p *Player) Extent() float64 {
+	return p.profile.Radius
 }
 
-func (p *Player) MoveTo(center spatial.Vec2) {
-	p.position = Vec2{X: center.X, Y: center.Y}
+func (p *Player) Update(dt float64) {
+	if p.controller == nil {
+		return
+	}
+	dx, dy := p.controller.Direction()
+	radius := p.profile.Radius
+	p.Position.X = m.Clamp(p.Position.X+dx*p.profile.Speed*dt, radius, p.world.Width-radius)
+	p.Position.Y = m.Clamp(p.Position.Y+dy*p.profile.Speed*dt, radius, p.world.Height-radius)
 }
 
 func (p *Player) ApplyKey(key string, pressed bool) bool {
-	bit, ok := keyBits[key]
+	controller, ok := p.controller.(KeyController)
 	if !ok {
 		return false
 	}
-
-	for {
-		old := p.keys.Load()
-		next := old &^ bit
-		if pressed {
-			next = old | bit
-		}
-		if p.keys.CompareAndSwap(old, next) {
-			return true
-		}
-	}
-}
-
-func (p *Player) Update(dt, width, height float64) {
-	p.move(dt, width, height)
-}
-
-func (p *Player) move(dt, width, height float64) {
-	mask := p.keys.Load()
-
-	dx, dy := 0.0, 0.0
-	if mask&keyLeft != 0 {
-		dx--
-	}
-	if mask&keyRight != 0 {
-		dx++
-	}
-	if mask&keyUp != 0 {
-		dy--
-	}
-	if mask&keyDown != 0 {
-		dy++
-	}
-	if dx != 0 && dy != 0 {
-		dx /= math.Sqrt2
-		dy /= math.Sqrt2
-	}
-
-	p.position.X = clamp(p.position.X+dx*Speed*dt, p.radius, width-p.radius)
-	p.position.Y = clamp(p.position.Y+dy*Speed*dt, p.radius, height-p.radius)
-}
-
-func clamp(v, lo, hi float64) float64 {
-	if hi < lo {
-		return lo
-	}
-	if v < lo {
-		return lo
-	}
-	if v > hi {
-		return hi
-	}
-	return v
-}
-
-func (p *Player) Read(ctx context.Context) ([]byte, error) {
-	_, msg, err := p.ws.Read(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return msg, nil
-}
-
-func (p *Player) Write(ctx context.Context, msg []byte) error {
-	return p.ws.Write(ctx, websocket.MessageText, msg)
-}
-
-func (p *Player) Done() <-chan struct{} {
-	return p.ctx.Done()
-}
-
-func (p *Player) Stop() {
-	p.cancel()
-}
-
-func (p *Player) CloseWebSocket(statusCode websocket.StatusCode, errorMessage string) {
-	network.CloseWebSocket(p.ws, statusCode, errorMessage)
+	return controller.ApplyKey(key, pressed)
 }

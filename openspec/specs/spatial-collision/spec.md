@@ -1,136 +1,129 @@
 # spatial-collision Specification
 
 ## Purpose
-Defines circle/AABB geometry and read-only collision detection that reports solid overlaps to a
-caller-supplied callback, leaving every response to game code.
+
+Defines the collision primitives: vector and rectangle geometry, circle and AABB shapes,
+penetration computation, exact contact detection over the spatial index, and the read-only
+reporting contract callers use to respond to contacts.
 
 ## Requirements
 
 ### Requirement: Circle and AABB geometry
 
-The spatial system SHALL support circles (center and radius) and axis-aligned boxes (minimum and
-maximum corners), each providing its bounding rectangle, center, point containment, and
-point-to-shape distance (zero inside the shape).
+The spatial package SHALL provide a 2D vector with add, subtract, scale, dot, length, distance,
+and normalization operations; a rectangle with width, height, center, validity, containment,
+intersection, containment, clamping, translation, and quadrant operations; and a shape interface
+exposing bounds, center point, point containment, and distance. Circle and AABB SHALL implement
+that interface, with distance zero inside the shape.
 
 #### Scenario: Distances match the shape
-- **WHEN** a point outside a circle or box is measured
-- **THEN** the distance is the Euclidean gap to the shape, and it is zero for a point inside
+
+- **WHEN** a point lies inside a shape
+- **THEN** its distance is zero; outside, it is the distance to the shape boundary
 
 #### Scenario: Bounding rectangles are exact
-- **WHEN** a circle or box reports its bounds
-- **THEN** the rectangle encloses exactly that shape
+
+- **WHEN** a shape reports its bounds
+- **THEN** the bounds enclose the shape with no padding
 
 ### Requirement: Exact contact detection
 
-Contact detection SHALL report a collision only when two shapes overlap with positive
-penetration, and SHALL return the contact normal and penetration depth; shapes that merely touch
-SHALL NOT collide.
+Contact detection SHALL report a contact for two distinct solid-capable bodies only when their
+shapes actually penetrate, not when they merely touch. Detection SHALL support circle-circle,
+circle-AABB, and AABB-AABB pairs with a shared penetration depth and normal.
 
 #### Scenario: Two circles overlap
-- **WHEN** the distance between circle centers is less than the sum of their radii
-- **THEN** a contact is reported with depth equal to the overlap and a normal along the center line
+
+- **WHEN** two circle centers are closer than the sum of their radii
+- **THEN** a contact is reported with that penetration depth
 
 #### Scenario: Two circles touch
-- **WHEN** the distance between circle centers equals the sum of their radii
+
+- **WHEN** the distance between centers equals the sum of radii
 - **THEN** no contact is reported
 
 #### Scenario: Circle overlaps a box face
-- **WHEN** a circle overlaps the side of a box
-- **THEN** the contact normal is perpendicular to that face and the depth is the overlap
+
+- **WHEN** a circle penetrates an AABB side
+- **THEN** the contact normal points from the box toward the circle center
 
 #### Scenario: Circle center lies inside a box
-- **WHEN** a circle's center is inside a box
-- **THEN** the contact reports an outward direction through the nearest face and a depth that
-  includes the circle radius
+
+- **WHEN** a circle center is inside an AABB
+- **THEN** the contact uses the nearest side and a depth of that side distance plus the radius
 
 #### Scenario: Two boxes overlap
-- **WHEN** two boxes intersect
-- **THEN** the contact uses the axis of least penetration and reports its depth
+
+- **WHEN** two AABBs overlap
+- **THEN** the contact uses the axis of smaller overlap
 
 #### Scenario: Coincident circle centers
+
 - **WHEN** two circles share a center
-- **THEN** the contact normal falls back to a fixed axis so the result stays deterministic
+- **THEN** the normal is the positive X axis and the depth is the sum of radii
 
 ### Requirement: Contact orientation
 
-A reported contact SHALL order A as the body with the lexicographically smaller stable key and
-SHALL point its normal from B toward A, so moving A by the normal times the depth separates the
-pair.
+A contact SHALL name bodies `A` and `B` with `A.Key() <= B.Key()`, and its normal SHALL point
+from `B` toward `A`. A body SHALL NOT be reported in contact with itself.
 
 #### Scenario: Pair is ordered by key
-- **WHEN** two bodies overlap regardless of the order they are passed in
-- **THEN** the returned contact has the smaller key as A and the normal points from B toward A
+
+- **WHEN** contact detection receives bodies in the reverse key order
+- **THEN** the reported pair and normal are swapped consistently
 
 ### Requirement: Read-only collision reporting
 
-Collision detection SHALL report each overlapping solid pair exactly once without moving,
-pushing, separating, or otherwise mutating any body, and SHALL invoke an optional callback
-synchronously for every reported contact before returning the contacts.
+Detection SHALL NOT move or mutate any body. It SHALL report every penetrating pair of solid
+bodies exactly once, ignore non-solid bodies, and require no mutation to answer. A nil index
+SHALL report nothing.
 
 #### Scenario: Callback receives every contact once
-- **WHEN** several solid bodies overlap
-- **THEN** the callback runs once per overlapping pair and the same contacts are returned
+
+- **WHEN** several players overlap
+- **THEN** the callback receives each unordered pair once
 
 #### Scenario: Detection does not move bodies
-- **WHEN** detection reports a contact
-- **THEN** both bodies keep their positions and shapes unchanged
+
+- **WHEN** detection runs
+- **THEN** all body positions are unchanged
 
 #### Scenario: Non-solid bodies are ignored
-- **WHEN** a non-solid body overlaps a solid body or another non-solid body
-- **THEN** no contact is reported and the callback does not run
 
-#### Scenario: Separated and touching bodies are ignored
-- **WHEN** two solid bodies are separated or merely touching
-- **THEN** no contact is reported
+- **WHEN** a body reports itself non-solid
+- **THEN** it produces no contacts
 
 #### Scenario: Nil inputs are safe
-- **WHEN** detection runs with a nil index or a nil callback
-- **THEN** a nil index reports nothing and a nil callback still returns the contacts without
-  panicking
+
+- **WHEN** detection receives a nil index or a nil body
+- **THEN** it reports nothing instead of panicking
 
 ### Requirement: Body-focused contact reporting
 
-`DetectBodyCollisions` SHALL report contacts between one solid body and the other solid bodies
-around it, once per pair, without moving either body; contacts SHALL be ordered by the other
-body's key and the callback SHALL receive them synchronously.
+A body-focused query SHALL report contacts for one target body only, skipping itself and
+non-solid others, and SHALL return nothing for a nil or non-solid target.
 
 #### Scenario: Only the target body's contacts are reported
-- **WHEN** a body overlaps two others while a fourth body overlaps only itself
-- **THEN** the callback receives the two contacts involving the target body and nothing else
 
-#### Scenario: Body-focused detection is read-only
-- **WHEN** body-focused detection reports contacts
-- **THEN** neither the target body nor any other body changes position
+- **WHEN** a focused query runs for one body in a crowded index
+- **THEN** every reported contact names that body
 
 #### Scenario: Non-solid target reports nothing
-- **WHEN** the target body is not solid
-- **THEN** no contacts are reported
+
+- **WHEN** the queried body is not solid
+- **THEN** the result is empty
 
 ### Requirement: Deterministic contact order
 
-Reported contacts SHALL be ordered by the pair of stable body keys, so callback and return order
-do not depend on index traversal or insertion order, and detection SHALL complete in a single
-pass without positional iterations.
+Contacts SHALL be ordered by ascending `A` key and then ascending `B` key, independent of
+insertion order, and one pass SHALL report every contact present at detection time.
 
 #### Scenario: Order is independent of insertion
-- **WHEN** the same overlapping bodies are inserted in different orders
-- **THEN** the callback sees the same contact order
+
+- **WHEN** the same bodies populate two indexes in different orders
+- **THEN** both report contacts in the same order
 
 #### Scenario: One pass reports current contacts
-- **WHEN** detection runs on a set of overlapping bodies
-- **THEN** every currently overlapping solid pair is reported once and no repeated correction pass
-  occurs
 
-### Requirement: Callback-driven response
-
-All collision response SHALL live in the caller's callback. The spatial package SHALL NOT assume
-or provide separation, sliding, stopping, damage, or world-clamping behavior; the callback
-receives the bodies, normal, and depth and decides what changes to make.
-
-#### Scenario: Caller moves only the reported body
-- **WHEN** a callback moves the body that caused the overlap out along the contact normal
-- **THEN** that body is the only one repositioned and the other body stays where detection found it
-
-#### Scenario: Caller leaves bodies overlapping
-- **WHEN** a callback ignores a contact
-- **THEN** the bodies remain exactly where detection found them
+- **WHEN** a caller corrects a body after a report
+- **THEN** the same pass does not re-report the pair unless the correction still penetrates

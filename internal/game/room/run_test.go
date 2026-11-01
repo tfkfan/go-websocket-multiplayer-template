@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/tfkfan/gogame/internal/config"
+	coreroom "github.com/tfkfan/gogame/internal/core/room"
 	"go.uber.org/goleak"
 )
 
@@ -15,7 +16,7 @@ func TestRoomTimeoutClosesRoom(t *testing.T) {
 	roomCtx, roomCancel := context.WithCancel(context.Background())
 	defer roomCancel()
 
-	gr := NewGameRoom(roomCtx, roomCancel, &config.Config{
+	room := NewGameRoom(roomCtx, roomCancel, &config.Config{
 		RoomTimeout:  30 * time.Millisecond,
 		RoomCapacity: 8,
 	})
@@ -24,7 +25,7 @@ func TestRoomTimeoutClosesRoom(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		gr.Run(context.Background(), func(*GameRoom) {
+		room.Run(context.Background(), func(*coreroom.Room) {
 			close(closed)
 		})
 	}()

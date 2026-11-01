@@ -15,6 +15,7 @@ const DIRECTIONS := ["UP", "DOWN", "LEFT", "RIGHT"]
 @onready var title: Label = %Title
 @onready var subtitle: Label = %Subtitle
 @onready var create_button: Button = %CreateButton
+@onready var play_button: Button = %PlayButton
 @onready var room_row: HBoxContainer = %RoomRow
 @onready var room_label: Label = %RoomLabel
 @onready var room_link: LinkButton = %RoomLink
@@ -29,6 +30,7 @@ const DIRECTIONS := ["UP", "DOWN", "LEFT", "RIGHT"]
 var _room_id := ""
 var _self_id := ""
 var _connected := false
+var _queueing := false
 var _leaving := false
 var _direction_states := {"UP": false, "DOWN": false, "LEFT": false, "RIGHT": false}
 var _direction_suppressed := {"UP": false, "DOWN": false, "LEFT": false, "RIGHT": false}
@@ -37,7 +39,7 @@ func _ready() -> void:
 	_apply_theme()
 	_connect_signals()
 	_set_room_visible(false)
-	_set_status("Create a room to start.", false)
+	_set_status("Create a room or press Play.", false)
 	_update_stats()
 	Platform.register_visibility_callback(_on_focus_lost)
 	var requested_room := Platform.room_from_query()
@@ -73,6 +75,7 @@ func _apply_theme() -> void:
 	room_label.add_theme_color_override("font_color", UiTheme.MUTED)
 	UiTheme.apply_link(room_link)
 	UiTheme.apply_button(create_button, &"primary")
+	UiTheme.apply_button(play_button, &"primary")
 	UiTheme.apply_button(copy_button, &"ghost")
 	UiTheme.apply_button(leave_button, &"danger")
 	status.add_theme_font_size_override("font_size", 13)
@@ -83,6 +86,7 @@ func _apply_theme() -> void:
 
 func _connect_signals() -> void:
 	create_button.pressed.connect(_on_create_pressed)
+	play_button.pressed.connect(_on_play_pressed)
 	copy_button.pressed.connect(_on_copy_pressed)
 	leave_button.pressed.connect(_on_leave_pressed)
 	Network.room_created.connect(_on_room_created)
@@ -95,8 +99,26 @@ func _connect_signals() -> void:
 
 func _on_create_pressed() -> void:
 	create_button.disabled = true
+	play_button.disabled = true
 	_set_status("Creating room…", false)
 	Network.create_room()
+
+func _on_play_pressed() -> void:
+	play_button.disabled = true
+	create_button.visible = false
+	play_button.visible = false
+	room_row.visible = false
+	leave_button.visible = true
+	copy_button.visible = false
+	_queueing = true
+	_connected = false
+	_room_id = ""
+	_self_id = ""
+	game_field.set_room_active(true)
+	game_field.clear_state()
+	_set_status("Finding players…", false)
+	_update_stats()
+	Network.connect_queue()
 
 func _on_room_created(room_id: String) -> void:
 	create_button.disabled = false
@@ -106,13 +128,29 @@ func _on_room_created(room_id: String) -> void:
 
 func _on_room_create_failed(message: String) -> void:
 	create_button.disabled = false
+	play_button.disabled = false
 	_set_status("Could not create room: " + message, true)
 
 func _on_opened() -> void:
 	_connected = true
+	if _queueing:
+		_set_status("Waiting for players…", false)
+		return
 	_set_status("Connected. Waiting for the game state…", false)
 
 func _on_join_received(data: Dictionary) -> void:
+	if _queueing:
+		_queueing = false
+		_room_id = str(data.get("roomId", ""))
+		if not _room_id.is_empty():
+			Platform.set_room_in_address(_room_id)
+			room_link.text = _room_id
+			room_link.uri = Platform.room_url(_room_id)
+			room_row.visible = true
+			copy_button.visible = true
+		create_button.visible = false
+		play_button.visible = false
+		leave_button.visible = true
 	var player_id := str(data.get("playerId", ""))
 	if not player_id.is_empty():
 		_self_id = player_id
@@ -132,6 +170,11 @@ func _on_closed(code: int, reason: String) -> void:
 	_reset_direction_state()
 	game_field.clear_state()
 	_update_stats()
+	if _queueing:
+		_queueing = false
+		_reset_room()
+		_set_status("Left the queue.", false)
+		return
 	if _leaving:
 		_leaving = false
 		_set_status("Left the room.", false)
@@ -178,6 +221,7 @@ func _show_room(room_id: String) -> void:
 	room_link.uri = Platform.room_url(room_id)
 	room_row.visible = true
 	create_button.visible = false
+	play_button.visible = false
 	create_button.disabled = false
 	leave_button.visible = true
 	copy_button.visible = true
@@ -193,6 +237,9 @@ func _reset_room() -> void:
 	create_button.visible = true
 	create_button.disabled = false
 	create_button.text = "Create room"
+	play_button.visible = true
+	play_button.disabled = false
+	_queueing = false
 	leave_button.visible = false
 	copy_button.visible = false
 	game_field.set_self_id("")
@@ -204,6 +251,7 @@ func _reset_room() -> void:
 func _set_room_visible(visible: bool) -> void:
 	room_row.visible = visible
 	create_button.visible = not visible
+	play_button.visible = not visible
 	leave_button.visible = visible
 	copy_button.visible = visible
 
